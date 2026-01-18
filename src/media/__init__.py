@@ -7,6 +7,18 @@ Provides clients for fetching movie and TV show metadata from various sources:
 All clients are async and include caching for performance.
 """
 
+from src.media.kinopoisk import (
+    KinopoiskClient,
+    KinopoiskError,
+    KinopoiskFilm,
+    KinopoiskMediaType,
+    KinopoiskNotFoundError,
+    KinopoiskSearchResult,
+    KinopoiskUnavailableError,
+    get_kinopoisk_film,
+    get_kinopoisk_rating,
+    search_kinopoisk,
+)
 from src.media.tmdb import (
     Credits,
     MediaType,
@@ -21,6 +33,7 @@ from src.media.tmdb import (
 )
 
 __all__ = [
+    # TMDB
     "TMDBClient",
     "TMDBError",
     "TMDBNotFoundError",
@@ -31,4 +44,15 @@ __all__ = [
     "Person",
     "Credits",
     "SearchResult",
+    # Kinopoisk
+    "KinopoiskClient",
+    "KinopoiskError",
+    "KinopoiskNotFoundError",
+    "KinopoiskUnavailableError",
+    "KinopoiskFilm",
+    "KinopoiskSearchResult",
+    "KinopoiskMediaType",
+    "search_kinopoisk",
+    "get_kinopoisk_film",
+    "get_kinopoisk_rating",
 ]
