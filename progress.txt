@@ -936,3 +936,104 @@ Project initialized. Ready for first iteration.
 #### Next steps:
 - USER-001: User Profile Storage
 
+---
+
+### Iteration 13 - USER-001: User Profile Storage
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/user/__init__.py` with module exports
+- Created `src/user/storage.py` with comprehensive SQLite-based user storage (1200+ lines)
+- Implemented database schema with 4 main tables:
+  - `users`: User profiles with telegram_id, username, names, language
+  - `credentials`: Encrypted OAuth tokens and sensitive credentials
+  - `preferences`: User preferences (quality, language, genres, notifications)
+  - `watched`: Watch history with TMDB/Kinopoisk IDs
+- Implemented encryption for OAuth tokens:
+  - `EncryptionHelper` class using Fernet symmetric encryption
+  - Base64 encoding for storage in SQLite TEXT columns
+  - Automatic decryption on retrieval with expiration checking
+- Implemented full CRUD operations:
+  - `create_user()`, `get_user()`, `get_user_by_telegram_id()`
+  - `get_or_create_user()` with automatic info update
+  - `update_user()`, `delete_user()`, `list_users()` with pagination
+  - Credential storage/retrieval with encryption
+  - Preferences management with JSON arrays for genres
+  - Watch history tracking with is_watched() check
+- Implemented database migrations:
+  - `MigrationManager` class with version tracking
+  - 5 migrations for all tables plus _migrations tracking table
+  - Idempotent migrations (safe to run multiple times)
+  - Automatic migration application on connect
+- Created Pydantic data models:
+  - `User`, `Credential`, `Preference`, `WatchedItem`
+  - `CredentialType` enum for token types
+  - Helper properties like `display_name`
+- Created comprehensive test suite `tests/test_user_storage.py`:
+  - 49 unit tests covering all functionality
+  - Tests for encryption, migrations, CRUD, credentials
+  - Tests for context manager and convenience functions
+
+#### Acceptance Criteria Verification:
+- ✅ src/user/storage.py created with SQLite via aiosqlite
+- ✅ Schema: users, credentials, preferences, watched tables
+- ✅ OAuth token encryption using Fernet (cryptography library)
+- ✅ CRUD operations for all user data
+- ✅ Database migrations with version tracking
+
+#### Learnings:
+- **Fernet encryption**: Symmetric encryption ideal for credential storage
+  - Key must be 32 bytes URL-safe base64 encoded
+  - Includes timestamp in ciphertext (same plaintext → different ciphertext)
+  - Base64 encoding allows storage in TEXT columns
+- **aiosqlite patterns**: Async wrapper around sqlite3
+  - Row factory for dict-like access (row["column"])
+  - Foreign keys require explicit `PRAGMA foreign_keys = ON`
+  - `executescript()` for multi-statement SQL (CREATE TABLE + INDEX)
+- **Migration strategy**: Sequential version-based migrations
+  - `_migrations` table tracks applied versions
+  - Check table existence before version query
+  - Idempotent migrations using `IF NOT EXISTS`
+- **datetime.utcnow() deprecated**: Use `datetime.now(UTC)` instead
+  - Import `from datetime import UTC, datetime`
+  - Pyright flags utcnow() as deprecated
+- **Type safety with async context managers**:
+  - Use underscore prefix for unused exc_type, exc_val, exc_tb
+  - Return type tuple[User, bool] requires non-None User
+- **JSON storage for arrays**: Store genre lists as JSON strings
+  - `json.dumps()` for writing, `json.loads()` for reading
+  - Handle None/empty string → default to "[]"
+
+#### Architecture decisions:
+- **Single file approach**: All storage logic in one file
+  - Models, encryption, migrations, CRUD in storage.py
+  - Easy to understand and test
+  - Could split later if needed
+- **Async context manager**: Clean resource management
+  - `async with UserStorage(...) as storage`
+  - Automatic migration on connect
+  - Automatic close on exit
+- **Credential encryption required**: No plaintext storage allowed
+  - `store_credential()` raises if no encryption key
+  - Prevents accidental insecure usage
+- **Default preferences on user create**: Simpler API
+  - Creating user also creates preferences row
+  - Avoids null checks when getting preferences
+- **ON CONFLICT for upsert**: Credential updates via INSERT OR REPLACE
+  - Cleaner than separate INSERT/UPDATE logic
+  - Atomic operation
+
+#### Verification Results:
+- ✓ User creation works correctly
+- ✓ Tokens stored encrypted (verified in DB - not plaintext)
+- ✓ Token decryption returns original value
+- ✓ All migrations applied (5 migrations)
+- ✓ All tables created (users, credentials, preferences, watched, _migrations)
+- ✓ All 49 user storage tests pass
+- ✓ All 357 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- ONBOARD-001: User Onboarding Flow
+
