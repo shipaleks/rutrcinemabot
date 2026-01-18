@@ -95,4 +95,63 @@ Project initialized. Ready for first iteration.
 - ✓ Linter and formatter pass without issues
 
 #### Next steps:
-- INFRA-003: Logging Setup (src/logger.py with structlog)
+- BOT-001: Basic Telegram Bot (src/bot/main.py with handlers)
+
+---
+
+### Iteration 3 - INFRA-003: Logging Setup
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/logger.py` with structlog configuration
+- Implemented environment-aware logging:
+  - **Production mode (Koyeb)**: JSON-formatted logs for log aggregation
+  - **Development mode**: Colored console output with human-friendly formatting
+- Configured structured logging processors:
+  - Automatic timestamp injection (ISO format)
+  - Log level normalization (warn → warning)
+  - Stack trace and exception formatting
+  - Sensitive data censoring processor
+- Implemented `censor_sensitive_data()` processor that automatically masks:
+  - Tokens, passwords, API keys, secrets, authorization headers
+  - Encryption keys, credentials, session data, cookies
+  - Works recursively on nested dicts and lists
+- Created `get_logger()` helper function for easy logger instantiation
+- Verified all acceptance criteria:
+  - ✅ src/logger.py created with structlog configuration
+  - ✅ JSON format output in production (ENVIRONMENT=production)
+  - ✅ Console-friendly colored output in development
+  - ✅ Different log levels configurable via LOG_LEVEL env var
+  - ✅ Sensitive data automatically censored with "***" in logs
+
+#### Learnings:
+- **Structlog processors**: Chain of responsibility pattern for transforming log events
+  - Processors run in order, each can modify the event dict
+  - Final renderer converts event dict to output format (JSON or Console)
+- **Type hints with structlog**: EventDict is MutableMapping[str, Any], not dict
+  - Need to be careful with type annotations to avoid mypy/pyright errors
+- **Sensitive data detection**: Pattern matching on key names (case-insensitive)
+  - Keywords like "token", "password", "api_key" trigger censoring
+  - Applied recursively to handle nested structures
+- **Environment-based configuration**: Using settings.is_production for renderer selection
+  - Production: JSONRenderer for machine-readable logs
+  - Development: ConsoleRenderer with colors for human readability
+- **Stdlib integration**: structlog integrates with Python's logging module
+  - ProcessorFormatter bridges structlog processors with stdlib logging
+  - Allows gradual adoption in projects using stdlib logging
+- **Linter compliance**: ruff prefers early returns over elif chains (RET505)
+  - Replaced `elif` with separate `if` statements after returns
+
+#### Verification:
+- ✓ Test 1: Logger import works without errors
+- ✓ Test 2: Production mode outputs valid JSON format
+  - Example: `{"user_id": 123, "status": "success", "event": "test_message", "logger": "__main__", "level": "info", "timestamp": "2026-01-18T13:25:44.081111Z"}`
+- ✓ Test 3: Sensitive data automatically censored
+  - `token`, `api_key`, `password`, `encryption_key` all replaced with "***"
+- ✓ Test 4: Development mode shows colored console output
+  - Includes timestamp, level (colored), event name, logger name, and context fields
+- ✓ Linter passes: `ruff check . --fix` and `ruff format .` both pass
+
+#### Next steps:
+- BOT-001: Basic Telegram Bot (src/bot/main.py with /start and /help handlers)
