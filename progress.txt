@@ -767,3 +767,77 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - MEDIA-002: Kinopoisk Integration
+
+---
+
+### Iteration 11 - MEDIA-002: Kinopoisk Integration
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Verified existing `src/media/kinopoisk.py` implementation (796 lines)
+- Comprehensive Kinopoisk Unofficial API client with all required features:
+  - `KinopoiskClient` async context manager class
+  - `search()` method for Russian and English title search
+  - `get_film()` for detailed film information
+  - `get_rating()` for Kinopoisk rating retrieval
+  - `get_description_ru()` for Russian description
+- Data models:
+  - `KinopoiskFilm` with full metadata (ratings, descriptions, genres, countries)
+  - `KinopoiskSearchResult` for search results
+  - `KinopoiskCountry`, `KinopoiskGenre` helper models
+- Graceful degradation:
+  - `search_safe()`, `get_film_safe()` return None/empty on errors
+  - Convenience functions: `search_kinopoisk()`, `get_kinopoisk_film()`, `get_kinopoisk_rating()`
+- Error handling:
+  - `KinopoiskError` base exception
+  - `KinopoiskNotFoundError` (404), `KinopoiskAuthError` (401)
+  - `KinopoiskRateLimitError` (402), `KinopoiskUnavailableError` (5xx, timeout)
+- Caching:
+  - `SimpleCache` class with TTL support
+  - Automatic caching of API responses
+- Comprehensive test suite: 53 tests in `tests/test_kinopoisk.py`
+
+#### Acceptance Criteria Verification:
+- ✅ src/media/kinopoisk.py created with complete implementation
+- ✅ Search by Russian and English titles via `search()` method with `keyword` param
+- ✅ Get Kinopoisk rating via `get_rating()` and `rating_kinopoisk` field
+- ✅ Get Russian description via `get_description_ru()` and `description` field
+- ✅ Graceful degradation via `*_safe()` methods and convenience functions
+
+#### Learnings:
+- **Kinopoisk API authentication**: Uses X-API-KEY header (not query param like TMDB)
+  - API token from kinopoiskapiunofficial.tech
+  - Rate limit indicated by 402 status code (not 429)
+- **API versioning**: Different endpoints for different API versions
+  - v2.2: `/v2.2/films` for search with type filter
+  - v2.1: `/v2.1/films/search-by-keyword` for keyword search
+  - Field names differ between versions (filmId vs kinopoiskId)
+- **Pydantic aliases for snake_case**: API returns camelCase
+  - Use `Field(..., alias="camelCase")` for mapping
+  - Set `model_config = {"populate_by_name": True}` for both name styles
+- **Graceful degradation pattern**: Critical for bot reliability
+  - Regular methods raise exceptions for caller control
+  - `*_safe()` methods return None/empty for fire-and-forget calls
+  - Convenience functions use safe methods by default
+- **Code reuse**: Similar patterns to TMDB client
+  - Async context manager, SimpleCache, exception hierarchy
+  - Enables consistent API across media sources
+
+#### Architecture decisions:
+- **Dual search endpoints**: v2.2 for type filtering, v2.1 for simpler keyword search
+- **Response mapping**: Normalize v2.1 response to v2.2 model format
+- **Helper methods**: `get_title()`, `get_english_title()`, `get_genre_names()`
+- **is_tv_series()**: Check both `serial` flag and `type` field
+
+#### Verification Results:
+- ✓ Search "Брат" returns correct film
+- ✓ Kinopoisk rating present (8.1)
+- ✓ Russian description present
+- ✓ Bot continues working on API error (graceful degradation)
+- ✓ All 53 Kinopoisk tests pass
+- ✓ All 257 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- SEEDBOX-001: Seedbox Integration
