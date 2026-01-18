@@ -1,0 +1,27 @@
+# Media Concierge Bot - Progress Log
+
+This file tracks learnings, decisions, and blockers across Ralph iterations.
+Each entry should be timestamped and reference the story ID.
+
+---
+
+## Session Start
+
+Project initialized. Ready for first iteration.
+
+### Decisions Made
+- Using python-telegram-bot 21.x (async)
+- Using Claude claude-sonnet-4-5-20250929 for tool_use
+- SQLite for user storage (simple, file-based)
+- Pydantic for all data models
+
+### Known Challenges
+- Rutracker may require proxy/VPN from some regions
+- Trakt tokens expire every 24 hours - need auto-refresh
+- sendMessageDraft is new Telegram API - verify support in python-telegram-bot
+
+---
+
+## Iteration Log
+
+<!-- Entries will be added here by Claude during iterations -->

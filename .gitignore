@@ -1,0 +1,121 @@
+# =============================================================================
+# Media Concierge Bot - .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment & Secrets
+# -----------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Pyenv
+.python-version
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# -----------------------------------------------------------------------------
+# IDE
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# -----------------------------------------------------------------------------
+# OS
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# -----------------------------------------------------------------------------
+# Project Specific
+# -----------------------------------------------------------------------------
+# Database
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# User data (but keep the directory)
+data/users/
+!data/.gitkeep
+
+# Logs
+*.log
+logs/
+ralph.log
+
+# Cache
+.cache/
+cache/
+*.cache
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docker
+.docker/
+
+# Test artifacts
+.coverage
+coverage.xml
+*.cover
