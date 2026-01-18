@@ -1366,3 +1366,94 @@ Project initialized. Ready for first iteration.
 #### Next steps:
 - DOC-001: Documentation (final task)
 
+---
+
+### Iteration 18 - DOC-001: Documentation
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `docs/ARCHITECTURE.md` with comprehensive system architecture documentation:
+  - ASCII diagrams showing system components and data flow
+  - Module overview with file structure for each module
+  - Database schema documentation
+  - Tool flow diagram for Claude API integration
+  - Deployment architecture diagram
+  - Security and performance considerations
+- Created `docs/API.md` with detailed tool documentation:
+  - Overview table of all 7 Claude tools
+  - Full documentation for each tool with parameters, examples, and responses
+  - ToolExecutor usage guide
+  - Integration example with ClaudeClient
+  - Error handling documentation
+  - Rate limits reference
+- Created `docs/DEPLOYMENT.md` with Koyeb deployment guide:
+  - Prerequisites and API key sources
+  - Step-by-step deployment instructions
+  - Koyeb secrets configuration
+  - Environment variables reference
+  - koyeb.yaml reference
+  - Troubleshooting section
+  - Monitoring and cost estimation
+- Updated `README.md`:
+  - Added Documentation section with links to all docs
+  - Improved Deployment to Koyeb instructions
+- Verified all public functions have docstrings (0 missing)
+
+#### Acceptance Criteria Verification:
+- ✅ README с quick start (already present, enhanced with docs links)
+- ✅ docs/ARCHITECTURE.md с диаграммами (created with ASCII diagrams)
+- ✅ docs/API.md с описанием tools (all 7 tools documented)
+- ✅ docs/DEPLOYMENT.md с инструкцией для Koyeb (comprehensive guide)
+- ✅ Inline документация в коде (docstrings) (all public functions have docstrings)
+
+#### Learnings:
+- **ASCII diagrams work well in markdown**: Clear visual representation without images
+  - Use monospace formatting for alignment
+  - Box drawing characters (+ | -) for simple diagrams
+- **Documentation structure**: Three docs cover different audiences
+  - ARCHITECTURE.md: For developers understanding the system
+  - API.md: For integrating with Claude tools
+  - DEPLOYMENT.md: For deploying to production
+- **Tool documentation pattern**: Consistent format helps usability
+  - Description, parameters table, example request, example response
+  - Error response examples important for debugging
+- **Docstring verification with AST**: Python's ast module can check docstrings programmatically
+  - Walk the AST tree and check FunctionDef/AsyncFunctionDef nodes
+  - Skip private methods (starting with _)
+  - Check first body element is Expr with Constant value
+
+#### Verification Results:
+- ✓ README contains quick start instructions
+- ✓ docs/ARCHITECTURE.md created with diagrams (9KB)
+- ✓ docs/API.md created with tool descriptions (9KB)
+- ✓ docs/DEPLOYMENT.md created with Koyeb instructions (8KB)
+- ✓ All public functions have docstrings (0 missing)
+- ✓ All 415 tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+---
+
+## PROJECT COMPLETE
+
+All 19 user stories have been implemented and verified:
+- INFRA-001: Project Structure Setup ✅
+- INFRA-002: Configuration Management ✅
+- INFRA-003: Logging Setup ✅
+- BOT-001: Basic Telegram Bot ✅
+- BOT-002: Message Streaming ✅
+- AI-001: Claude API Integration ✅
+- AI-002: Tool Definitions ✅
+- SEARCH-001: Rutracker Search ✅
+- SEARCH-002: PirateBay Search ✅
+- MEDIA-001: TMDB Integration ✅
+- MEDIA-002: Kinopoisk Integration ✅
+- SEEDBOX-001: Seedbox Integration ✅
+- USER-001: User Profile Storage ✅
+- ONBOARD-001: User Onboarding Flow ✅
+- CONV-001: Natural Language Search ✅
+- CONV-002: Context-Aware Responses ✅
+- DEPLOY-001: Koyeb Deployment ✅
+- TEST-001: Unit Tests (75% coverage) ✅
+- DOC-001: Documentation ✅
+

@@ -65,12 +65,18 @@ chmod +x ralph.sh
 | Trakt | [trakt.tv/oauth/applications](https://trakt.tv/oauth/applications) |
 | Kinopoisk | [kinopoiskapiunofficial.tech](https://kinopoiskapiunofficial.tech/) |
 
+## Documentation
+
+- [Architecture Overview](docs/ARCHITECTURE.md) - System design and module structure
+- [API Reference](docs/API.md) - Claude tools and their parameters
+- [Deployment Guide](docs/DEPLOYMENT.md) - Step-by-step Koyeb deployment
+
 ## Deployment to Koyeb
 
 1. Push your code to GitHub
-2. Create new Koyeb service
-3. Connect your GitHub repo
-4. Set environment variables in Koyeb dashboard
+2. Create Koyeb secrets (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md))
+3. Create new Koyeb service from GitHub repo
+4. Configure webhook URL
 5. Deploy!
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed instructions.

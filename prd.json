@@ -390,7 +390,7 @@
         "README содержит инструкции по запуску",
         "Все публичные функции имеют docstrings"
       ],
-      "passes": false
+      "passes": true
     }
   ],
 
