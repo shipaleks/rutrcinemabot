@@ -136,7 +136,7 @@
         "Streaming работает корректно",
         "Tool calls обрабатываются"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "AI-002",
