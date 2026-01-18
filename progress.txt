@@ -578,3 +578,91 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - SEARCH-002: PirateBay Search Integration
+
+---
+
+### Iteration 9 - SEARCH-002: PirateBay Search Integration
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/search/piratebay.py` with comprehensive PirateBay search functionality (600+ lines)
+- Implemented `PirateBayClient` async context manager class:
+  - `search()` method with query, category, and min_seeds filtering
+  - HTML parsing with multiple selector patterns for different mirrors
+  - Magnet link extraction from various HTML structures
+- Data models and exceptions:
+  - `PirateBayResult` Pydantic model with title, size, seeds, leeches, magnet, quality
+  - `PirateBayError` base exception
+  - `PirateBayUnavailableError` for site unavailable/blocked scenarios
+- Helper functions:
+  - `detect_quality()`: Regex-based quality detection with word boundaries
+  - `parse_size()`: Parse human-readable sizes (GB, MB, TB, GiB, etc.) to bytes
+  - `build_magnet_link()`: Generate magnet URIs with trackers
+  - `extract_magnet_link()`: Extract magnet from HTML elements
+- Mirror fallback functionality:
+  - `search_with_fallback()`: Tries multiple mirrors sequentially
+  - 5 mirrors configured: thepiratebay.org, thepiratebay10.org, piratebay.live, thepiratebay.zone, tpb.party
+  - Graceful degradation when all mirrors fail
+- Category filtering support:
+  - All Video (200), Movies (201), TV (205), HD Movies (207), HD TV (208)
+- Created comprehensive test suite `tests/test_piratebay.py`:
+  - 42 unit tests covering all functionality
+  - Tests for helper functions (quality detection, size parsing, magnet building)
+  - Tests for PirateBayResult model
+  - Tests for PirateBayClient (init, context manager, parsing, search, filtering)
+  - Tests for error handling and mirror fallback
+  - Sample HTML fixtures for realistic parsing tests
+- Updated `src/search/__init__.py` to export PirateBay components
+
+#### Acceptance Criteria Verification:
+- ✅ src/search/piratebay.py created with complete implementation
+- ✅ Search via scraping with multiple HTML parsing patterns
+- ✅ Results parsing: title, size, seeds, leeches, magnet in `PirateBayResult` model
+- ✅ Category filtering (Video, Movies, TV, HD) via `category` parameter
+- ✅ Fallback to mirrors via `search_with_fallback()` function
+
+#### Learnings:
+- **PirateBay HTML structure varies by mirror**: Different mirrors use different HTML layouts
+  - Classic table layout: `table#searchResult tr`
+  - Modern list layout: `ol#torrents li`
+  - Alternative structures: `table.list tr`, `li.list-entry`, `div.detName`
+  - Need multiple CSS selector patterns to handle all cases
+- **Word boundaries in regex are critical**: Without `\b` boundaries, patterns like "DV" for Dolby Vision would match "DVDRip"
+  - Changed from `r"DV"` to `r"\bDolby[\s._-]*Vision\b"` for accurate matching
+  - Similar fixes for Full HD, Ultra HD patterns
+- **BeautifulSoup type hints**: `.get()` returns `str | list[str] | None`
+  - Need explicit type checking with `isinstance()` before using values
+  - `Tag` type from bs4 is different from `BeautifulSoup` type
+- **Cloudflare protection handling**: PirateBay mirrors often use Cloudflare
+  - Detect "Cloudflare" + "challenge" in HTML
+  - Raise `PirateBayUnavailableError` to trigger mirror fallback
+- **Magnet link extraction strategies**:
+  - Direct magnet link in anchor href
+  - Hash in data attributes (data-hash)
+  - Build magnet with trackers if only hash available
+
+#### Architecture decisions:
+- **Reused patterns from Rutracker**: Similar structure for maintainability
+  - Async context manager pattern
+  - Pydantic models for results
+  - Exception hierarchy
+  - Helper functions for quality detection and size parsing
+- **Separate Result models**: `PirateBayResult` vs `SearchResult` from Rutracker
+  - Different fields available (uploader, uploaded date for PirateBay)
+  - Could unify later if needed, but separate for now
+- **min_seeds filter**: Added for PirateBay (not in Rutracker)
+  - Useful for filtering out dead torrents
+  - Applied client-side after HTML parsing
+
+#### Verification Results:
+- ✓ Module imports work correctly
+- ✓ Search returns results with mocked HTML (3 results parsed)
+- ✓ Magnet links start with "magnet:?xt=urn:btih:"
+- ✓ Mirror fallback works (retries on PirateBayUnavailableError)
+- ✓ All 42 PirateBay tests pass
+- ✓ All 149 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- MEDIA-001: TMDB Integration
