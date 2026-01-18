@@ -24,4 +24,35 @@ Project initialized. Ready for first iteration.
 
 ## Iteration Log
 
-<!-- Entries will be added here by Claude during iterations -->
+### Iteration 1 - INFRA-001: Project Structure Setup
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `pyproject.toml` with all required dependencies:
+  - python-telegram-bot 21.x for async Telegram bot
+  - anthropic 0.40+ for Claude API
+  - httpx, pydantic, structlog, aiosqlite, cryptography, beautifulsoup4, lxml
+  - Dev dependencies: pytest, pytest-asyncio, pytest-cov, ruff, mypy
+- Created multi-stage `Dockerfile` optimized for production:
+  - Builder stage with compilation dependencies
+  - Runtime stage with minimal image size (target < 500MB)
+  - Health check endpoint configured
+  - Non-root user for security
+  - Supports webhook mode for Koyeb deployment
+- Verified all acceptance criteria:
+  - ✅ Directory structure exists (src/, tests/, data/, docs/)
+  - ✅ pyproject.toml with all dependencies
+  - ✅ .env.example with all environment variables
+  - ✅ .gitignore for Python project
+  - ✅ Dockerfile for Koyeb
+  - ✅ README.md with project description
+
+#### Learnings:
+- Project structure was already partially set up, needed pyproject.toml and Dockerfile
+- Using ruff for linting/formatting (modern, fast alternative to black + flake8)
+- Dockerfile uses multi-stage build to minimize final image size
+- All async dependencies selected for python-telegram-bot 21.x compatibility
+
+#### Next steps:
+- INFRA-002: Configuration Management (src/config.py with pydantic-settings)
