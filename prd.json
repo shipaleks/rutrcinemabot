@@ -61,7 +61,7 @@
         "python -c 'from src.config import settings' работает",
         "При отсутствии TELEGRAM_BOT_TOKEN выбрасывается понятная ошибка"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "INFRA-003",

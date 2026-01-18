@@ -56,3 +56,43 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - INFRA-002: Configuration Management (src/config.py with pydantic-settings)
+
+---
+
+### Iteration 2 - INFRA-002: Configuration Management
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/config.py` with pydantic-settings for configuration management
+- Implemented Settings class with all required and optional environment variables:
+  - Required: TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, TMDB_API_KEY, KINOPOISK_API_TOKEN, ENCRYPTION_KEY
+  - Optional: SEEDBOX_HOST, SEEDBOX_USER, SEEDBOX_PASSWORD
+  - App config: LOG_LEVEL, ENVIRONMENT, CACHE_TTL, WEBHOOK_URL, WEBHOOK_PATH, PORT
+- All sensitive fields use `SecretStr` type to prevent accidental logging
+- Added field validators for log_level and environment
+- Implemented helper properties: is_development, is_production, has_seedbox
+- Created `get_safe_dict()` method that masks sensitive values with '***'
+- Verified all acceptance criteria:
+  - ✅ src/config.py created with pydantic-settings
+  - ✅ All env variables properly typed (SecretStr for sensitive data, str/int for others)
+  - ✅ Required variables validated (raises ValidationError if missing)
+  - ✅ Sensitive data not logged (SecretStr + get_safe_dict() for safe logging)
+
+#### Learnings:
+- Using SecretStr prevents accidental logging of secrets in exceptions and logs
+- pydantic-settings automatically loads from .env file with env_file setting
+- Field validators can enforce allowed values (e.g., log levels, environments)
+- Property methods provide convenient helpers for common checks
+- get_safe_dict() is useful for logging configuration without exposing secrets
+- ruff formatter adjusts list formatting in properties
+
+#### Verification:
+- ✓ `python -c 'from src.config import settings'` works without errors
+- ✓ Validation error raised when required variables missing
+- ✓ Sensitive values properly masked in get_safe_dict()
+- ✓ Can access secret values via get_secret_value() when needed
+- ✓ Linter and formatter pass without issues
+
+#### Next steps:
+- INFRA-003: Logging Setup (src/logger.py with structlog)
