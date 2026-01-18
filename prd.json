@@ -352,7 +352,7 @@
         "/health возвращает 200 OK",
         "Бот работает после деплоя на Koyeb"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "TEST-001",

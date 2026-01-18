@@ -64,13 +64,15 @@ USER botuser
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV LOG_LEVEL=INFO
+ENV PORT=8000
+ENV HEALTH_PORT=8080
 
-# Health check endpoint (bot will implement /health)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:${WEBHOOK_PORT:-8000}/health || exit 1
+# Health check endpoint on dedicated health port
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${HEALTH_PORT:-8080}/health || exit 1
 
-# Expose webhook port
-EXPOSE 8000
+# Expose both webhook and health check ports
+EXPOSE 8000 8080
 
 # Run the bot
 CMD ["python", "-m", "src.bot.main"]

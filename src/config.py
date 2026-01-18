@@ -101,6 +101,13 @@ class Settings(BaseSettings):
         le=65535,
     )
 
+    health_port: int = Field(
+        default=8080,
+        description="Port for health check server (separate from webhook)",
+        ge=1,
+        le=65535,
+    )
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

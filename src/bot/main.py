@@ -2,10 +2,14 @@
 
 This module initializes the bot and sets up handlers for commands and messages.
 Supports both polling (development) and webhook (production) modes.
+Includes an HTTP health check endpoint for Koyeb/Docker health monitoring.
 """
 
 import asyncio
+import contextlib
+import json
 import sys
+from asyncio import StreamReader, StreamWriter
 from typing import NoReturn
 
 from telegram import Update
@@ -30,6 +34,9 @@ from src.config import settings
 from src.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Global flag to track bot health
+_bot_healthy = False
 
 
 async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -81,10 +88,18 @@ def create_application() -> Application:
 async def run_polling(application: Application) -> None:
     """Run the bot in polling mode (for development).
 
+    Also starts a health server for local testing of deployment readiness.
+
     Args:
         application: The bot application instance
     """
-    logger.info("starting_polling_mode")
+    global _bot_healthy
+
+    health_port = settings.health_port
+    logger.info("starting_polling_mode", health_port=health_port)
+
+    # Start health check server (useful for local testing)
+    health_server = await start_health_server(health_port)
 
     # Initialize the application
     await application.initialize()
@@ -94,7 +109,14 @@ async def run_polling(application: Application) -> None:
         drop_pending_updates=True,
     )
 
-    logger.info("bot_started_polling", mode="polling")
+    # Mark bot as healthy
+    _bot_healthy = True
+
+    logger.info(
+        "bot_started_polling",
+        mode="polling",
+        health_endpoint=f"http://localhost:{health_port}/health",
+    )
 
     # Keep the bot running
     try:
@@ -104,21 +126,115 @@ async def run_polling(application: Application) -> None:
         logger.info("bot_stopping", reason="user_interrupt")
     finally:
         # Cleanup
+        _bot_healthy = False
+        health_server.close()
+        await health_server.wait_closed()
         await application.updater.stop()
         await application.stop()
         await application.shutdown()
         logger.info("bot_stopped")
 
 
+async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> None:
+    """Handle incoming HTTP requests for health checks.
+
+    This is a minimal HTTP server that only responds to /health requests.
+    All other requests return 404.
+
+    Args:
+        reader: Async stream reader for the connection
+        writer: Async stream writer for the connection
+    """
+    try:
+        # Read the request line
+        request_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        if not request_line:
+            return
+
+        request_str = request_line.decode("utf-8").strip()
+
+        # Read headers (we don't need them, but must consume them)
+        while True:
+            line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            if line == b"\r\n" or line == b"\n" or not line:
+                break
+
+        # Parse request path
+        parts = request_str.split(" ")
+        if len(parts) >= 2:
+            method, path = parts[0], parts[1]
+        else:
+            method, path = "GET", "/"
+
+        # Handle /health endpoint
+        if path == "/health" and method == "GET":
+            status = "healthy" if _bot_healthy else "starting"
+            status_code = 200 if _bot_healthy else 503
+            body = json.dumps(
+                {"status": status, "service": "media-concierge-bot", "ready": _bot_healthy}
+            )
+            response = (
+                f"HTTP/1.1 {status_code} {'OK' if status_code == 200 else 'Service Unavailable'}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{body}"
+            )
+        else:
+            # Return 404 for other paths
+            body = json.dumps({"error": "Not Found"})
+            response = (
+                f"HTTP/1.1 404 Not Found\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{body}"
+            )
+
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
+
+    except TimeoutError:
+        logger.debug("health_request_timeout")
+    except Exception as e:
+        logger.debug("health_request_error", error=str(e))
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+
+
+async def start_health_server(port: int) -> asyncio.Server:
+    """Start the HTTP health check server.
+
+    Args:
+        port: Port to listen on for health checks
+
+    Returns:
+        The running asyncio Server instance
+    """
+    server = await asyncio.start_server(handle_health_request, "0.0.0.0", port)
+    logger.info("health_server_started", port=port, endpoint="/health")
+    return server
+
+
 async def run_webhook(application: Application) -> None:
     """Run the bot in webhook mode (for production on Koyeb).
+
+    Starts both the webhook server for Telegram updates and
+    an HTTP health check server for deployment monitoring.
 
     Args:
         application: The bot application instance
     """
+    global _bot_healthy
+
     webhook_url = settings.webhook_url
     webhook_path = settings.webhook_path
     port = settings.port
+    health_port = settings.health_port
 
     if not webhook_url:
         logger.error("webhook_url_not_configured")
@@ -128,8 +244,12 @@ async def run_webhook(application: Application) -> None:
         "starting_webhook_mode",
         webhook_url=webhook_url,
         webhook_path=webhook_path,
-        port=port,
+        webhook_port=port,
+        health_port=health_port,
     )
+
+    # Start health check server first (so Koyeb can see we're starting)
+    health_server = await start_health_server(health_port)
 
     # Initialize the application
     await application.initialize()
@@ -142,7 +262,7 @@ async def run_webhook(application: Application) -> None:
         drop_pending_updates=True,
     )
 
-    # Start the webhook server
+    # Start the webhook server for Telegram updates
     await application.updater.start_webhook(
         listen="0.0.0.0",
         port=port,
@@ -150,7 +270,15 @@ async def run_webhook(application: Application) -> None:
         webhook_url=f"{webhook_url}{webhook_path}",
     )
 
-    logger.info("bot_started_webhook", mode="webhook", url=f"{webhook_url}{webhook_path}")
+    # Mark bot as healthy now that everything is started
+    _bot_healthy = True
+
+    logger.info(
+        "bot_started_webhook",
+        mode="webhook",
+        url=f"{webhook_url}{webhook_path}",
+        health_endpoint=f"http://0.0.0.0:{health_port}/health",
+    )
 
     # Keep the bot running
     try:
@@ -159,6 +287,9 @@ async def run_webhook(application: Application) -> None:
         logger.info("bot_stopping", reason="user_interrupt")
     finally:
         # Cleanup
+        _bot_healthy = False
+        health_server.close()
+        await health_server.wait_closed()
         await application.updater.stop()
         await application.stop()
         await application.shutdown()

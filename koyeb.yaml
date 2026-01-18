@@ -1,0 +1,89 @@
+# Koyeb deployment configuration for Media Concierge Bot
+# Documentation: https://www.koyeb.com/docs/reference/koyeb-file-reference
+
+name: media-concierge-bot
+
+service:
+  # Docker deployment configuration
+  type: docker
+  docker:
+    # Build from Dockerfile in repository root
+    dockerfile: Dockerfile
+    # Build context is the repository root
+    context: .
+
+  # Instance configuration
+  instance_type: nano  # Free tier eligible
+  regions:
+    - fra  # Frankfurt, Europe
+
+  # Scaling configuration (single instance for webhook mode)
+  scaling:
+    min: 1
+    max: 1
+
+  # Port configuration
+  ports:
+    # Health check port
+    - port: 8080
+      protocol: http
+      path: /health
+    # Webhook port (Telegram updates)
+    - port: 8000
+      protocol: http
+      path: /webhook
+
+  # Health check configuration
+  health_checks:
+    - type: http
+      port: 8080
+      path: /health
+      interval_seconds: 30
+      timeout_seconds: 10
+      healthy_threshold: 1
+      unhealthy_threshold: 3
+      grace_period_seconds: 60
+
+  # Environment variables (configure in Koyeb dashboard as secrets)
+  # The webhook URL will be automatically constructed from the app URL
+  env:
+    # Required - set these as secrets in Koyeb dashboard
+    - key: TELEGRAM_BOT_TOKEN
+      secret: telegram-bot-token
+    - key: ANTHROPIC_API_KEY
+      secret: anthropic-api-key
+    - key: TMDB_API_KEY
+      secret: tmdb-api-key
+    - key: KINOPOISK_API_TOKEN
+      secret: kinopoisk-api-token
+    - key: ENCRYPTION_KEY
+      secret: encryption-key
+
+    # Application configuration
+    - key: ENVIRONMENT
+      value: production
+    - key: LOG_LEVEL
+      value: INFO
+    - key: PORT
+      value: "8000"
+    - key: HEALTH_PORT
+      value: "8080"
+    - key: WEBHOOK_PATH
+      value: /webhook
+
+    # Webhook URL - set this to your Koyeb app URL
+    # Example: https://media-concierge-bot-<your-org>.koyeb.app
+    - key: WEBHOOK_URL
+      secret: webhook-url
+
+    # Optional seedbox configuration (set as secrets if needed)
+    # - key: SEEDBOX_HOST
+    #   secret: seedbox-host
+    # - key: SEEDBOX_USER
+    #   secret: seedbox-user
+    # - key: SEEDBOX_PASSWORD
+    #   secret: seedbox-password
+
+  # Deployment strategy
+  deployment:
+    strategy: rolling
