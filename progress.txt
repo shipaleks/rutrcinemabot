@@ -313,3 +313,92 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - AI-001: Claude API Integration (will use streaming for responses)
+
+---
+
+### Iteration 6 - AI-001: Claude API Integration
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/ai/__init__.py` as module entry point with exports
+- Created `src/ai/prompts.py` with system prompts:
+  - `MEDIA_CONCIERGE_SYSTEM_PROMPT`: Comprehensive Russian-language prompt for media assistant
+  - `get_system_prompt()`: Function to append user preferences to base prompt
+  - Supports quality, language, and genre preferences injection
+- Created `src/ai/claude_client.py` with full Claude API integration:
+  - `Message`, `ToolCall`, `ToolResult` dataclasses for clean data handling
+  - `ConversationContext` class for managing conversation history with trimming
+  - `ClaudeClient` class with async client for Anthropic API
+  - Model: claude-sonnet-4-5-20250929 (as specified in prd.json)
+- Implemented streaming support:
+  - `stream_message()`: Async iterator yielding text chunks as generated
+  - Handles streaming events: content_block_start, content_block_delta, content_block_stop
+  - Accumulates tool call JSON during streaming for later execution
+- Implemented tool_use mechanism:
+  - `_execute_tool()`: Executes tool calls via configurable executor function
+  - `_process_response()`: Handles multi-turn tool conversations (up to 10 iterations)
+  - Proper error handling for tool execution failures
+  - Tool results sent back to Claude for continued conversation
+- Created comprehensive test suite in `tests/test_claude_client.py`:
+  - 21 unit tests covering all major functionality
+  - Tests for dataclasses, context management, prompts, client initialization
+  - Tests for tool execution (success, error, no executor)
+  - Tests for send_message and streaming
+  - All tests passing with proper mocking of Anthropic client
+- Verified all acceptance criteria:
+  - ✅ src/ai/claude_client.py created with async client
+  - ✅ Streaming generation implemented via stream_message()
+  - ✅ System prompt configured for Russian-language media concierge
+  - ✅ Tool_use mechanism implemented with executor pattern
+
+#### Learnings:
+- **Anthropic SDK patterns**:
+  - AsyncAnthropic for async operations
+  - `messages.create()` for non-streaming requests
+  - `messages.stream()` context manager for streaming
+  - Content blocks can be `text` or `tool_use` types
+- **Streaming event handling**:
+  - `content_block_start`: Indicates new block, check type for tool_use
+  - `content_block_delta`: Incremental content (text.text or input_json.partial_json)
+  - `content_block_stop`: Block complete, finalize tool call if needed
+  - Text deltas can be yielded immediately for progressive display
+- **Tool_use conversation flow**:
+  - Claude responds with tool_use blocks containing name and input
+  - Must add assistant response with tool_use to conversation
+  - Execute tool and add result as user message with tool_result type
+  - Continue conversation until Claude responds without tool_use
+  - Max iterations guard prevents infinite loops
+- **Type safety with SDK**:
+  - Anthropic SDK uses union types for content blocks
+  - `hasattr()` checks needed for attribute access (text, partial_json)
+  - Pyright warnings are acceptable for hasattr patterns
+- **Testing patterns**:
+  - Mock Anthropic client at module level
+  - Use dataclasses for mock response objects
+  - AsyncMock for async methods, MagicMock for sync
+
+#### Architecture decisions:
+- **Tool executor pattern**: Pass callable to ClaudeClient
+  - Decouples client from tool implementations
+  - Easy to test with mock executors
+  - Allows different executors per use case
+- **Context trimming**: Keep last N messages (default 20)
+  - Prevents context overflow
+  - Simple sliding window approach
+  - Could add smarter trimming later (summarization)
+- **Streaming with tools**: Non-streaming continuation
+  - After tool execution, continue with non-streaming
+  - Simpler implementation, tool results usually fast
+  - Could optimize to stream continuation too
+
+#### Verification:
+- ✓ All 21 Claude client tests pass
+- ✓ All 30 project tests pass (no regressions)
+- ✓ Claude client imports work: `from src.ai.claude_client import ClaudeClient`
+- ✓ System prompt contains media concierge instructions
+- ✓ Preferences injection works correctly
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- AI-002: Tool Definitions (define all tools for Claude API)
