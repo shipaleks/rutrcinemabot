@@ -215,3 +215,101 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - BOT-002: Message Streaming with sendMessageDraft
+
+---
+
+### Iteration 5 - BOT-002: Message Streaming with sendMessageDraft
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/bot/streaming.py` with comprehensive streaming functionality:
+  - `StreamingMessageHandler` class for managing progressive message updates
+  - Automatic typing indicator that re-sends every 4 seconds (Telegram requirement)
+  - Rate-limited message updates (configurable interval, default 0.5s)
+  - Progressive text accumulation from async iterators
+  - Graceful error handling with message preservation
+- Implemented key features:
+  - `start_typing()` / `stop_typing()`: Manage typing indicator lifecycle
+  - `send_initial_message()`: Send placeholder message to be updated
+  - `update_message()`: Update message with rate limiting and error handling
+  - `finalize_message()`: Force-send final complete message
+  - `stream_text()`: Main entry point for streaming from async iterator
+  - `send_streaming_message()`: Convenience function for one-liner usage
+- Created comprehensive test suite in `tests/test_streaming.py`:
+  - 9 unit tests covering all major functionality
+  - Tests for typing indicator, rate limiting, error handling, streaming
+  - All tests passing with proper async/await patterns
+  - Mock Telegram objects for isolated testing
+- Updated `src/bot/__init__.py` to export streaming module
+- Verified all acceptance criteria:
+  - ✅ src/bot/streaming.py created with streaming logic
+  - ✅ Messages update progressively as content is generated
+  - ✅ Error handling ensures message is sent even if streaming fails
+  - ✅ Typing indicator shows during generation (auto-renewed every 4s)
+
+#### Learnings:
+- **Telegram typing indicator behavior**:
+  - ChatAction.TYPING expires after 5 seconds
+  - Must re-send every 4-5 seconds to maintain indicator
+  - Implemented background asyncio task that loops until stopped
+  - Used contextlib.suppress() for clean CancelledError handling (ruff suggestion)
+- **Message streaming pattern**:
+  - No "sendMessageDraft" API in python-telegram-bot or Telegram Bot API
+  - Standard approach: send initial message, then use `edit_message_text()` to update
+  - Rate limiting essential to avoid Telegram API limits (429 Too Many Requests)
+  - Configurable update interval (default 0.5s) balances UX and API limits
+- **Error handling strategy**:
+  - BadRequest errors: Check for "not modified" (text unchanged)
+  - RetryAfter errors: Wait specified time and retry
+  - TimedOut errors: Log but don't fail (message will finalize anyway)
+  - On any error: Always try to send accumulated text to user
+- **Type safety with Telegram objects**:
+  - update.effective_chat and update.message can be None in edge cases
+  - Added null checks before accessing properties to satisfy Pyright
+  - Used `raise ValueError()` for programmer errors vs graceful degradation for runtime errors
+- **Testing async generators**:
+  - Need to define generators inside test functions for proper async context
+  - AsyncMock works well for mocking Telegram API calls
+  - MagicMock with spec= provides good type checking in tests
+- **Code quality**:
+  - ruff auto-fixed import order (collections.abc.AsyncIterator preferred over typing.AsyncIterator)
+  - contextlib.suppress() cleaner than try/except/pass for expected exceptions
+  - Comprehensive docstrings in Google style format
+  - All public methods documented with Args/Returns/Raises
+
+#### Architecture decisions:
+- **Rate limiting approach**: Time-based with configurable interval
+  - Alternative: Token bucket algorithm (more complex, not needed yet)
+  - Alternative: Fixed batch size (less smooth UX)
+- **Typing indicator**: Background task pattern
+  - Alternative: Manual calls (error-prone, easy to forget)
+  - Alternative: Context manager (doesn't handle long-running operations well)
+- **Error recovery**: Best-effort message delivery
+  - Always try to send what was accumulated
+  - Re-raise error after sending (caller can decide how to handle)
+  - Log all errors with structured context
+
+#### Verification:
+- ✓ All 9 unit tests pass
+- ✓ Streaming handler creates messages and updates them progressively
+- ✓ Typing indicator starts/stops correctly
+- ✓ Rate limiting prevents excessive API calls
+- ✓ Error handling preserves accumulated text
+- ✓ Convenience function works end-to-end
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+- ✓ Type checker passes (only acceptable warnings in error recovery code)
+
+#### Integration notes:
+- **Next steps for integration**:
+  - AI-001 will use this streaming module with Claude API
+  - Claude's streaming API yields text chunks: `async for chunk in stream`
+  - Call `send_streaming_message(update, context, claude_stream())`
+  - Typing indicator will show automatically during generation
+- **Configuration options**:
+  - `update_interval`: Control update frequency (default 0.5s)
+  - `min_update_length`: Minimum chars before first update (default 20)
+  - `initial_text`: Placeholder while generating (default "...")
+
+#### Next steps:
+- AI-001: Claude API Integration (will use streaming for responses)
