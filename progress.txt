@@ -402,3 +402,88 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - AI-002: Tool Definitions (define all tools for Claude API)
+
+---
+
+### Iteration 7 - AI-002: Tool Definitions
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/ai/tools.py` with comprehensive tool definitions module:
+  - 7 tool definitions in Anthropic format with JSON schemas:
+    - `rutracker_search`: Search Russian torrent tracker with quality/category filters
+    - `piratebay_search`: Fallback search with min_seeds filter
+    - `tmdb_search`: Movie/TV metadata from TMDB with year and language filters
+    - `tmdb_credits`: Cast and crew information from TMDB
+    - `kinopoisk_search`: Russian movie database with Kinopoisk ratings
+    - `get_user_profile`: Get user preferences (quality, language, genres)
+    - `seedbox_download`: Send magnet links to seedbox or return directly
+  - All tools have detailed Russian descriptions for Claude
+  - Each tool has complete JSON schema with types, enums, and required fields
+- Created `ToolExecutor` class for routing tool calls:
+  - Handler registration via `register_handler()` and `register_handlers()`
+  - Callable interface `__call__` for ClaudeClient integration
+  - Structured logging for all operations
+  - Error handling with proper exception propagation
+- Created helper functions:
+  - `get_tool_definitions()`: Returns copy of all tools
+  - `get_tool_by_name()`: Retrieve specific tool
+  - `validate_tool_input()`: Validate input against JSON schema
+  - `create_executor_with_stubs()`: Create executor with stub handlers for testing
+- Created comprehensive test suite in `tests/test_tools.py`:
+  - 34 unit tests covering all functionality
+  - Tests for tool definitions structure and validity
+  - Tests for individual tool schemas
+  - Tests for helper functions
+  - Tests for input validation
+  - Tests for ToolExecutor (registration, execution, errors)
+  - Tests for stub handlers and integration
+- Updated `src/ai/__init__.py` to export new components
+- Verified all acceptance criteria:
+  - ✅ src/ai/tools.py created with all tool definitions
+  - ✅ All 7 required tools defined: rutracker_search, piratebay_search, tmdb_search, tmdb_credits, kinopoisk_search, get_user_profile, seedbox_download
+  - ✅ Each tool has complete JSON schema for parameters
+  - ✅ Tool executor created for routing calls
+
+#### Learnings:
+- **Anthropic tool format**: Tools use `input_schema` (not `parameters`) with JSON Schema
+  - Type "object" with properties, required, and optional fields
+  - Enums for constrained values (quality levels, media types)
+  - Descriptions in Russian for Russian-speaking assistant
+- **Tool executor pattern**: Callable class for clean integration
+  - `__call__` method makes executor directly usable as ClaudeClient parameter
+  - Handler registration allows lazy binding of actual implementations
+  - Stub handlers useful for testing tool routing before real implementations
+- **Validation approach**: Simple schema validation without full JSON Schema library
+  - Check required fields presence
+  - Check type matching (string, integer, boolean)
+  - Check enum value membership
+  - Return list of errors for detailed feedback
+- **Code organization**: Tools module self-contained
+  - Definitions, executor, validation, and helpers in single file
+  - Clear separation between definitions (data) and executor (behavior)
+  - Easy to extend with new tools
+
+#### Architecture decisions:
+- **Tool definitions as module constants**: Easy access and modification
+  - `ALL_TOOLS` list for iteration
+  - Individual `*_TOOL` constants for specific access
+  - `get_tool_definitions()` returns copy to prevent modification
+- **ToolExecutor as class**: Stateful handler registry
+  - Alternative: Dict-based dispatch (simpler but less flexible)
+  - Alternative: Decorator-based registration (more magic, harder to test)
+  - Chosen approach: Explicit registration, clear interface
+- **Stub handlers for testing**: Allow testing before real implementations
+  - Returns JSON with "stub" status and received input
+  - `create_executor_with_stubs()` factory for quick setup
+
+#### Verification:
+- ✓ All 7 tools have valid JSON schemas (type=object, properties, required)
+- ✓ Tool executor routes calls correctly to registered handlers
+- ✓ All 34 tools tests pass
+- ✓ All 64 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- SEARCH-001: Rutracker Search Integration

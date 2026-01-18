@@ -155,7 +155,7 @@
         "Все tools валидны по JSON Schema",
         "Tool executor корректно маршрутизирует вызовы"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "SEARCH-001",
