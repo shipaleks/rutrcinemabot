@@ -1300,3 +1300,69 @@ Project initialized. Ready for first iteration.
 #### Next steps:
 - TEST-001: Unit Tests (coverage > 70%)
 
+---
+
+### Iteration 17 - TEST-001: Unit Tests
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Verified existing comprehensive test suite covering all critical components
+- Confirmed test coverage meets requirements (75.00% overall)
+- Test file inventory:
+  - `tests/test_rutracker.py`: 43+ tests for Rutracker parser
+  - `tests/test_piratebay.py`: 42+ tests for PirateBay parser
+  - `tests/test_tmdb.py`: 55+ tests for TMDB client
+  - `tests/test_user_storage.py`: 49+ tests for user storage
+  - `tests/test_tools.py`: 34+ tests for tool executor
+  - Additional test files: test_claude_client.py, test_conversation.py, test_kinopoisk.py, test_onboarding.py, test_seedbox.py, test_streaming.py
+- Total: 415 tests passing
+
+#### Acceptance Criteria Verification:
+- ✅ Тесты для парсеров Rutracker/PirateBay (test_rutracker.py, test_piratebay.py)
+- ✅ Тесты для TMDB клиента (test_tmdb.py with 55+ tests)
+- ✅ Тесты для user storage (test_user_storage.py with 49+ tests)
+- ✅ Тесты для tool executor (test_tools.py with 34+ tests)
+- ✅ Coverage > 70% (75.00% achieved)
+
+#### Coverage breakdown by module:
+- src/ai/: 68-100% (claude_client 68.60%, prompts 100%, tools 96.47%)
+- src/bot/: 18-78% (handlers 22.58%, main 18.32%, conversation 70.83%, onboarding 61.52%, streaming 78.07%)
+- src/media/: 90-100% (tmdb 90.09%, kinopoisk 93.82%)
+- src/search/: 72-83% (piratebay 72.76%, rutracker 83.53%)
+- src/seedbox/: 58.49%
+- src/user/: 94.24%
+- src/config.py: 76.36%
+- src/logger.py: 93.02%
+
+#### Learnings:
+- **Test coverage was already achieved**: Previous iterations built comprehensive test suites
+  - Each feature implementation included unit tests
+  - Tests for parsers, clients, storage, and tools all existed
+- **Coverage calculation**: pytest-cov provides accurate line-by-line coverage
+  - TOTAL line shows overall percentage
+  - Missing column shows untested line numbers
+- **Bot modules have lower coverage**: handlers.py (22.58%) and main.py (18.32%)
+  - These modules are harder to test without running actual Telegram bot
+  - Integration tests would require Telegram API mocking
+  - Core business logic has high coverage, which is more important
+- **Critical components well covered**:
+  - Parsers (Rutracker/PirateBay): 72-83%
+  - Media clients (TMDB/Kinopoisk): 90-94%
+  - User storage: 94%
+  - Tool definitions and executor: 96%
+
+#### Architecture notes:
+- **Test organization**: One test file per module, matching src/ structure
+- **Async testing**: pytest-asyncio handles async test functions
+- **Mocking strategy**: unittest.mock.AsyncMock for async functions, MagicMock for sync
+- **Fixtures**: Sample HTML and JSON responses for realistic parsing tests
+
+#### Verification Results:
+- ✓ pytest проходит без ошибок (415 passed in 1.61s)
+- ✓ Coverage report показывает > 70% (75.00%)
+- ✓ All acceptance criteria met
+
+#### Next steps:
+- DOC-001: Documentation (final task)
+
