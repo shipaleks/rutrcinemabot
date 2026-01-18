@@ -71,11 +71,13 @@ class ConversationContext:
     Attributes:
         messages: List of messages in the conversation
         user_preferences: User's preferences for personalization
+        telegram_user_id: Telegram user ID for tool calls
         max_history: Maximum number of messages to keep
     """
 
     messages: list[Message] = field(default_factory=list)
     user_preferences: dict[str, Any] | None = None
+    telegram_user_id: int | None = None
     max_history: int = 20
 
     def add_message(self, role: str, content: str | list[dict[str, Any]]) -> None:
