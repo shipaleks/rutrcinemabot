@@ -99,7 +99,7 @@
         "Бот отвечает на /start",
         "Бот отвечает на /help"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "BOT-002",

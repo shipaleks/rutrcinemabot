@@ -208,7 +208,8 @@ Now begin working on ${next_task}."
         local exit_code=0
         output=$(timeout "${TIMEOUT_MINUTES}m" claude \
             --model "$MODEL" \
-            --dangerously-skip-permissions \
+            --permission-mode bypassPermissions \
+            --allowedTools "Bash Edit Write Read Glob Grep TodoWrite" \
             --output-format json \
             -p "$prompt" 2>&1) || exit_code=$?
         

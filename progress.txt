@@ -155,3 +155,63 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - BOT-001: Basic Telegram Bot (src/bot/main.py with /start and /help handlers)
+
+---
+
+### Iteration 4 - BOT-001: Basic Telegram Bot
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/bot/__init__.py` as module entry point
+- Created `src/bot/handlers.py` with command handlers:
+  - `start_handler()`: Welcomes user with feature overview and markdown formatting
+  - `help_handler()`: Shows command list and usage examples
+  - `error_handler()`: Global error handler with structured logging
+- Created `src/bot/main.py` with full bot initialization:
+  - `create_application()`: Sets up Telegram bot with handlers
+  - `run_polling()`: Development mode with polling
+  - `run_webhook()`: Production mode with webhook for Koyeb
+  - `main()`: Entry point with proper async handling
+- Verified all acceptance criteria:
+  - ✅ src/bot/main.py created with bot initialization
+  - ✅ /start handler with welcoming message in Russian
+  - ✅ /help handler with command list and examples
+  - ✅ Bot starts without errors (tested with create_application())
+  - ✅ Webhook mode for production (auto-detected from settings)
+
+#### Learnings:
+- **python-telegram-bot 21.x architecture**:
+  - Fully async with Application.builder() pattern
+  - Separate updater for polling vs webhook modes
+  - CommandHandler for /commands, MessageHandler for text messages
+  - Error handlers receive (update, context) with error in context.error
+- **Webhook vs Polling modes**:
+  - Polling: For development, uses updater.start_polling()
+  - Webhook: For production (Koyeb), uses updater.start_webhook() on 0.0.0.0
+  - Webhook requires set_webhook() to register URL with Telegram
+  - Settings determine mode: is_production and webhook_url presence
+- **Handler structure**:
+  - Each handler is async and receives (Update, ContextTypes.DEFAULT_TYPE)
+  - Use update.effective_user for user info
+  - Use update.message.reply_text() for responses
+  - Markdown formatting works but needs fallback for errors
+- **Error handling pattern**:
+  - Try/except in each handler with fallback plain text
+  - Global error_handler catches uncaught exceptions
+  - Structured logging with context (user_id, error details)
+- **Linter compliance**:
+  - ruff auto-fixed import order (removed unused structlog import)
+  - ruff formatted long builder chain to single line
+  - __all__ in __init__.py requires actual imports to avoid warnings
+
+#### Verification:
+- ✓ `python -c 'from src.bot.main import create_application; create_application()'` works
+- ✓ Application created with 3 handlers (/start, /help, /health)
+- ✓ Error handler registered successfully
+- ✓ Webhook mode enabled for production environment
+- ✓ All imports resolve correctly
+- ✓ Linter passes without errors
+
+#### Next steps:
+- BOT-002: Message Streaming with sendMessageDraft
