@@ -257,7 +257,7 @@
         "При отсутствии SEEDBOX_HOST бот показывает magnet ссылку пользователю",
         "Unit тесты для seedbox клиента проходят"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "USER-001",
