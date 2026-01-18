@@ -487,3 +487,94 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - SEARCH-001: Rutracker Search Integration
+
+---
+
+### Iteration 8 - SEARCH-001: Rutracker Search Integration
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Verified existing `src/search/rutracker.py` implementation (735 lines)
+- Comprehensive torrent search client with all required features:
+  - `RutrackerClient` async context manager class
+  - `search()` method with query, quality, and category filtering
+  - `get_magnet_link()` for fetching magnet links from topic pages
+  - `search_with_fallback()` for automatic mirror fallback
+- Data models and enums:
+  - `SearchResult` Pydantic model with title, size, seeds, leeches, magnet, quality
+  - `VideoQuality` enum: 720p, 1080p, 4K, 2160p, HDR
+  - `ContentCategory` enum: movie, tv_show, anime, documentary
+- Helper functions:
+  - `detect_quality()`: Regex-based quality detection from title
+  - `parse_size()`: Parse human-readable sizes (GB, MB, TB) to bytes
+  - `build_magnet_link()`: Generate magnet URIs with trackers
+  - `extract_magnet_hash()`: Extract info hash from magnet/raw hash
+- Error handling classes:
+  - `RutrackerError`: Base exception
+  - `RutrackerBlockedError`: Site blocked or unavailable
+  - `RutrackerCaptchaError`: Captcha required
+  - `RutrackerParseError`: HTML parsing failed
+- Created comprehensive test suite `tests/test_rutracker.py`:
+  - 43 unit tests covering all functionality
+  - Tests for helper functions (quality detection, size parsing, magnet building)
+  - Tests for SearchResult model
+  - Tests for RutrackerClient (init, context manager, parsing, search)
+  - Tests for error handling and fallback behavior
+  - Sample HTML fixtures for realistic parsing tests
+- Fixed linter issues:
+  - Added `contextlib` import for `suppress()` usage
+  - Removed unused variable `href` in get_magnet_link
+  - Fixed test file issues (unused variables, nested with statements)
+
+#### Acceptance Criteria Verification:
+- ✅ src/search/rutracker.py created with complete implementation
+- ✅ Search by movie/TV show title via `search()` method with `query` param
+- ✅ Results parsing: title, size, seeds, leeches, magnet in `SearchResult` model
+- ✅ Quality filtering (720p, 1080p, 4K, 2160p, HDR) via `quality` parameter
+- ✅ Captcha handling with `RutrackerCaptchaError`
+- ✅ Blocking handling with `RutrackerBlockedError` and mirror fallback
+
+#### Learnings:
+- **HTML parsing with BeautifulSoup**: Using lxml parser for speed
+  - Multiple selector patterns for Rutracker's varying HTML structure
+  - `select_one()` with CSS selectors for robust element finding
+  - Fallback patterns (try multiple selectors) for reliability
+- **Magnet link extraction**: Multiple strategies needed
+  - Direct magnet link in href attribute
+  - Hash in data attributes (data-hash)
+  - Hash in inline scripts (regex extraction)
+  - Build magnet with trackers if only hash available
+- **Error categorization**: Separate exceptions for different failure modes
+  - Blocked: Try different mirrors
+  - Captcha: Don't retry, notify user
+  - Parse error: Log but continue with partial results
+- **Quality detection patterns**: Case-insensitive regex matching
+  - Handle variations: "1080p", "Full HD", "FHD", "1080i"
+  - Prioritize specific quality over HDR flag
+- **Mirror fallback strategy**: Sequential retry with different base URLs
+  - Stop on success or captcha (captcha is site-wide)
+  - Continue on blocked error (region-specific)
+
+#### Architecture:
+- **Async context manager pattern**: Clean resource management
+  - `__aenter__` creates httpx.AsyncClient
+  - `__aexit__` closes client properly
+  - Property `client` with runtime check for initialization
+- **Pagination and limits**: MAX_RESULTS (20) to limit processing
+- **Sorting**: Results sorted by seeds (descending) for quality
+- **Caching consideration**: Magnet links fetched lazily per result
+
+#### Verification Results:
+- ✓ Module imports work correctly
+- ✓ Search returns results with mocked HTML
+- ✓ Results contain magnet links
+- ✓ Quality filtering works (1080p, 4K)
+- ✓ Blocking error message is clear
+- ✓ Captcha error message is clear
+- ✓ All 43 Rutracker tests pass
+- ✓ All 107 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- SEARCH-002: PirateBay Search Integration
