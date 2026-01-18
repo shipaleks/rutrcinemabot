@@ -29,10 +29,13 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """Ты - медиа-консьерж, друж�
 [Краткое описание на 1-2 предложения]
 ```
 
-## Работа с предпочтениями:
-- Учитывай настройки качества видео пользователя (предпочитаемое разрешение)
-- Учитывай языковые предпочтения (русский дубляж, оригинал с субтитрами)
-- Запоминай жанровые предпочтения для рекомендаций
+## Работа с предпочтениями пользователя:
+- **ВАЖНО**: ВСЕГДА используй сохранённые предпочтения пользователя при поиске!
+- При поиске торрентов передавай параметр quality с предпочитаемым качеством пользователя
+- При рекомендациях учитывай любимые жанры из профиля пользователя
+- Учитывай языковые предпочтения при описании результатов (русский дубляж, оригинал)
+- Если пользователь явно указал другое качество в запросе - используй его вместо предпочтений
+- Можешь получить профиль пользователя через инструмент get_user_profile
 
 ## Обработка запросов:
 - "Найди Дюну" → поиск на трекерах + информация TMDB
@@ -59,9 +62,9 @@ def get_system_prompt(user_preferences: dict | None = None) -> str:
 
     Args:
         user_preferences: Optional dict with user's preferences:
-            - preferred_quality: "1080p", "4K", etc.
-            - preferred_language: "ru", "en", etc.
-            - favorite_genres: list of genres
+            - quality: "1080p", "4K", "720p" etc. (video quality preference)
+            - audio_language: "ru", "en", "original" etc. (audio language preference)
+            - genres: list of preferred genres
 
     Returns:
         Complete system prompt with user context appended.
@@ -71,15 +74,31 @@ def get_system_prompt(user_preferences: dict | None = None) -> str:
     if user_preferences:
         context_parts = ["\n\n## Контекст пользователя:"]
 
-        if quality := user_preferences.get("preferred_quality"):
-            context_parts.append(f"- Предпочитаемое качество: {quality}")
+        # Handle both old and new field names for compatibility
+        quality = user_preferences.get("quality") or user_preferences.get("preferred_quality")
+        if quality:
+            context_parts.append(f"- Предпочитаемое качество видео: {quality}")
+            context_parts.append(
+                f'  → При поиске торрентов ВСЕГДА используй фильтр quality="{quality}"'
+            )
 
-        if language := user_preferences.get("preferred_language"):
-            lang_map = {"ru": "русский", "en": "английский"}
-            context_parts.append(f"- Язык: {lang_map.get(language, language)}")
+        language = user_preferences.get("audio_language") or user_preferences.get(
+            "preferred_language"
+        )
+        if language:
+            lang_map = {
+                "ru": "русский дубляж",
+                "en": "английский",
+                "original": "оригинальная дорожка",
+            }
+            context_parts.append(f"- Предпочитаемый язык аудио: {lang_map.get(language, language)}")
 
-        if genres := user_preferences.get("favorite_genres"):
+        genres = user_preferences.get("genres") or user_preferences.get("favorite_genres")
+        if genres and isinstance(genres, list) and len(genres) > 0:
             context_parts.append(f"- Любимые жанры: {', '.join(genres)}")
+            context_parts.append(
+                "  → Учитывай эти жанры при рекомендациях и предлагай контент из этих жанров"
+            )
 
         if len(context_parts) > 1:
             prompt += "\n".join(context_parts)

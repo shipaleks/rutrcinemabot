@@ -9,8 +9,16 @@ import sys
 from typing import NoReturn
 
 from telegram import Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
+from src.bot.conversation import handle_download_callback, handle_message
 from src.bot.handlers import error_handler, help_handler
 from src.bot.onboarding import (
     onboarding_callback_handler,
@@ -56,11 +64,16 @@ def create_application() -> Application:
     # Register callback query handlers for inline keyboards
     application.add_handler(CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"))
     application.add_handler(CallbackQueryHandler(settings_callback_handler, pattern="^settings_"))
+    application.add_handler(CallbackQueryHandler(handle_download_callback, pattern="^download_"))
+
+    # Register message handler for natural language conversation
+    # This should be last to avoid intercepting commands
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Register error handler
     application.add_error_handler(error_handler)
 
-    logger.info("application_created", handlers_registered=6)
+    logger.info("application_created", handlers_registered=8)
 
     return application
 

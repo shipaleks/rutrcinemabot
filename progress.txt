@@ -1131,3 +1131,75 @@ Project initialized. Ready for first iteration.
 #### Next steps:
 - CONV-001: Natural Language Search
 
+---
+
+### Iteration 15 - CONV-002: Context-Aware Responses
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Enhanced `src/ai/prompts.py` with improved user preference handling:
+  - Updated `get_system_prompt()` to use correct field names (quality, audio_language, genres)
+  - Added backward compatibility for old field names (preferred_quality, preferred_language, favorite_genres)
+  - Added explicit instructions for Claude to use quality filter in torrent searches
+  - Added instructions for Claude to consider genre preferences in recommendations
+- Updated `src/ai/claude_client.py`:
+  - Added `telegram_user_id` field to `ConversationContext` dataclass
+  - Enables tool calls to access user ID when needed
+- Updated `src/bot/conversation.py`:
+  - Set `telegram_user_id` on conversation context from Telegram user
+  - Added debug logging when user preferences are loaded
+  - Preferences (quality, audio_language, genres) loaded from database on each message
+- Created comprehensive test suite for context-aware functionality:
+  - Tests for conversation context preserving user preferences
+  - Tests for telegram_user_id storage
+  - Tests for message preservation within sessions
+  - Tests for system prompt generation with all preference types
+  - Tests for backward compatibility with old field names
+
+#### Acceptance Criteria Verification:
+- ✅ Claude помнит предпочтения пользователя из профиля (user preferences loaded into context)
+- ✅ Рекомендации учитывают жанровые предпочтения (genre instructions added to system prompt)
+- ✅ Контекст диалога сохраняется в рамках сессии (ConversationContext preserves messages)
+- ✅ Качество видео подбирается по предпочтениям (quality filter instructions added to prompt)
+
+#### Learnings:
+- **Field naming consistency**: Important to match field names between storage layer and prompts
+  - Storage: video_quality, audio_language, preferred_genres
+  - Conversation context: quality, audio_language, genres
+  - Added compatibility layer in get_system_prompt() for both naming conventions
+- **System prompt engineering for tools**: Adding explicit instructions in the system prompt
+  - "ВСЕГДА используй фильтр quality=\"X\"" ensures Claude passes quality to search tools
+  - "Учитывай эти жанры при рекомендациях" guides recommendation behavior
+- **Context persistence pattern**: ConversationContext stored in module-level dict by user_id
+  - Same context object returned for same user_id
+  - Messages accumulate within session
+  - clear() only clears messages, not preferences (by design)
+- **User ID propagation**: telegram_user_id in context enables tools to access user profile
+  - get_user_profile tool can use this to fetch fresh preferences
+  - Enables Claude to query profile when needed
+
+#### Architecture decisions:
+- **Per-user conversation context**: Dict[user_id, ConversationContext]
+  - Simple and effective for single-instance bot
+  - Could extend to Redis for multi-instance deployment
+- **Preferences in system prompt**: Most reliable way to influence Claude behavior
+  - Alternative: Pass as tool context (less reliable)
+  - Alternative: First message system info (clutters conversation)
+- **Debug logging for preferences**: Helps troubleshoot context issues
+  - Logs quality, audio_language, genres on each message
+  - Uses debug level to avoid log noise in production
+
+#### Verification Results:
+- ✓ System prompt includes quality preference and filter instruction
+- ✓ System prompt includes audio language preference
+- ✓ System prompt includes genre preferences with recommendation instruction
+- ✓ ConversationContext stores user_preferences and telegram_user_id
+- ✓ Context preserves messages within session
+- ✓ All 35 conversation tests pass
+- ✓ All 415 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- DEPLOY-001: Koyeb Deployment
+
