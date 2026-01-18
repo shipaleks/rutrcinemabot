@@ -43,7 +43,7 @@
         "cat pyproject.toml содержит все зависимости",
         "docker build . проходит без ошибок"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "INFRA-002",
