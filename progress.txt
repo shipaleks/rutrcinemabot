@@ -666,3 +666,104 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - MEDIA-001: TMDB Integration
+
+---
+
+### Iteration 10 - MEDIA-001: TMDB Integration
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/media/__init__.py` with module exports
+- Created `src/media/tmdb.py` with comprehensive TMDB API client (1000+ lines)
+- Implemented async HTTP client using httpx:
+  - `TMDBClient` class as async context manager
+  - Automatic caching with configurable TTL
+  - Proper error handling with typed exceptions
+- Implemented search functionality:
+  - `search_movie()`: Search for movies by title with optional year filter
+  - `search_tv()`: Search for TV shows by title with optional year filter
+  - `search_multi()`: Search both movies and TV shows together
+- Implemented detailed information retrieval:
+  - `get_movie()`: Get full movie details including genres, runtime, budget, revenue
+  - `get_tv_show()`: Get full TV show details including seasons, episodes
+- Implemented credits (cast & crew):
+  - `get_movie_credits()`: Get cast and crew for movies
+  - `get_tv_credits()`: Get cast and crew for TV shows
+  - `get_credits()`: Universal method for either type
+  - Helper methods: `get_directors()`, `get_writers()`, `get_top_cast()`
+- Implemented recommendations:
+  - `get_movie_recommendations()`: Get similar movies
+  - `get_tv_recommendations()`: Get similar TV shows
+  - `get_recommendations()`: Universal method for either type
+- Implemented caching:
+  - `SimpleCache` class with TTL support
+  - Automatic caching of API responses
+  - `clear_cache()` and `cleanup_cache()` methods
+- Created Pydantic data models:
+  - `Movie`, `TVShow`, `SearchResult`, `Credits`, `Person`
+  - `Genre`, `ProductionCompany`
+  - Helper methods for URLs, years, genre names
+- Created exception hierarchy:
+  - `TMDBError`: Base exception
+  - `TMDBNotFoundError`: Resource not found (404)
+  - `TMDBRateLimitError`: Rate limit with retry_after
+  - `TMDBAuthError`: Invalid API key (401)
+- Created comprehensive test suite `tests/test_tmdb.py`:
+  - 55 unit tests covering all functionality
+  - Tests for data models and their methods
+  - Tests for cache behavior
+  - Tests for client operations (search, details, credits, recommendations)
+  - Tests for error handling
+
+#### Acceptance Criteria Verification:
+- ✅ src/media/tmdb.py created with async client
+- ✅ Movie/TV search by title via `search_movie()`, `search_tv()`, `search_multi()`
+- ✅ Detailed movie info via `get_movie()` with genres, runtime, etc.
+- ✅ Credits (cast & crew) via `get_movie_credits()`, `get_tv_credits()`
+- ✅ Recommendations via `get_movie_recommendations()`, `get_tv_recommendations()`
+- ✅ Caching via `SimpleCache` with configurable TTL
+
+#### Learnings:
+- **TMDB API patterns**: Uses API key as query parameter, returns JSON
+  - Language parameter `language=ru-RU` for Russian content
+  - Pagination with page parameter
+  - Different endpoints for movies vs TV shows
+- **Pydantic models for API responses**: Clean data handling
+  - Model validation ensures type safety
+  - Helper methods on models for common operations
+  - Optional fields with defaults for missing data
+- **Cache design**: Simple in-memory cache sufficient for single-process bot
+  - TTL-based expiration with cleanup on access
+  - Cache key from endpoint + params
+  - Copy on read prevents mutation issues
+- **Error handling strategy**: Typed exceptions for different failure modes
+  - 404 → TMDBNotFoundError (can retry with different query)
+  - 429 → TMDBRateLimitError with retry_after
+  - 401 → TMDBAuthError (configuration issue)
+  - Other → TMDBError with status code
+- **Context manager pattern**: Clean resource management for httpx client
+  - `__aenter__` creates client, `__aexit__` closes it
+  - Property getter raises if not in context
+  - Unused exception parameters prefixed with underscore
+
+#### Architecture decisions:
+- **Separate search result model**: `SearchResult` unifies movie/TV search results
+  - Contains media_type field to distinguish
+  - Normalized field names (title vs name, release_date vs first_air_date)
+- **Helper methods on models**: `get_poster_url()`, `get_year()`, etc.
+  - Encapsulates URL building logic
+  - Returns None for missing data
+- **Default language**: Russian (ru-RU) for media concierge bot
+  - Can be overridden per-client
+
+#### Verification Results:
+- ✓ All imports work correctly
+- ✓ TMDBClient has all required methods
+- ✓ SimpleCache has get/set methods
+- ✓ All 55 TMDB tests pass
+- ✓ All 204 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- MEDIA-002: Kinopoisk Integration
