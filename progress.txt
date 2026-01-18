@@ -841,3 +841,98 @@ Project initialized. Ready for first iteration.
 
 #### Next steps:
 - SEEDBOX-001: Seedbox Integration
+
+---
+
+### Iteration 12 - SEEDBOX-001: Seedbox Integration
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/seedbox/__init__.py` with module exports
+- Created `src/seedbox/client.py` with comprehensive seedbox client (900+ lines)
+- Implemented support for multiple torrent client APIs:
+  - `TransmissionClient`: Transmission RPC API with CSRF token handling
+  - `QBittorrentClient`: qBittorrent Web API with session cookies
+  - `DelugeClient`: Deluge JSON-RPC API with daemon connection
+- Data models and exceptions:
+  - `TorrentInfo`: Torrent metadata (hash, name, status, progress, size, etc.)
+  - `TorrentStatus` enum: downloading, seeding, paused, checking, queued, error, unknown
+  - `SeedboxType` enum: transmission, qbittorrent, deluge
+  - `SeedboxError`, `SeedboxAuthError`, `SeedboxConnectionError`, `SeedboxTorrentError`
+- Implemented core functionality:
+  - `add_magnet()`: Send magnet links to seedbox
+  - `get_torrent_status()`: Get torrent progress and status
+  - `list_torrents()`: List all torrents on seedbox
+- Helper functions:
+  - `detect_seedbox_type()`: Auto-detect client type from URL
+  - `create_seedbox_client()`: Factory for creating appropriate client
+  - `extract_magnet_hash()`: Extract info hash from magnet links
+  - `is_seedbox_configured()`: Check if seedbox credentials available
+- Convenience functions with graceful degradation:
+  - `send_magnet_to_seedbox()`: Send magnet or return link if seedbox not configured
+  - `get_torrent_status()`: Get status or return error if seedbox not configured
+- Created comprehensive test suite `tests/test_seedbox.py`:
+  - 51 unit tests covering all functionality
+  - Tests for all three client types
+  - Tests for helper functions and convenience functions
+  - Tests for error handling and graceful degradation
+
+#### Acceptance Criteria Verification:
+- ✅ src/seedbox/client.py created with complete implementation
+- ✅ Support Transmission/qBittorrent/Deluge API (all three clients implemented)
+- ✅ Send magnet link for download via `add_magnet()` method
+- ✅ Get download status via `get_torrent_status()` method
+- ✅ Graceful degradation when seedbox not configured (returns magnet link)
+
+#### Learnings:
+- **Transmission RPC authentication**: Uses CSRF token (X-Transmission-Session-Id)
+  - Initial request returns 409 with session ID in header
+  - Must include session ID in all subsequent requests
+  - Token can expire, need to handle 409 and refresh
+- **qBittorrent authentication**: Uses session cookies
+  - POST to /api/v2/auth/login with form data
+  - Response "Ok." indicates success
+  - Cookie SID must be included in subsequent requests
+  - 403 indicates session expiry, need to re-authenticate
+- **Deluge authentication**: Uses JSON-RPC with password
+  - Password auth (not username/password)
+  - May need to connect to daemon after web login
+  - Check web.connected and use web.connect if needed
+- **Magnet hash formats**: Can be hex (40 chars) or base32 (32 chars)
+  - Base32 hashes need to be decoded to hex
+  - Use `base64.b32decode()` for conversion
+  - Only convert if 32 chars AND not all hex characters
+- **Exception chaining**: Python best practice (B904)
+  - Use `raise NewError(...) from original_error`
+  - Preserves stack trace for debugging
+  - Required by ruff linter
+- **Status mapping**: Each client has different status values
+  - Transmission: numeric codes (0-6)
+  - qBittorrent: string states (downloading, uploading, pausedDL, etc.)
+  - Deluge: capitalized strings (Downloading, Seeding, etc.)
+
+#### Architecture decisions:
+- **Abstract base class pattern**: `SeedboxClient` defines interface
+  - Concrete implementations for each client type
+  - Easy to add new client types
+  - Factory function creates appropriate type
+- **Auto-detection strategy**: Based on URL patterns
+  - Port numbers (9091, 8080, 8112) indicate client type
+  - Client name in URL also detected
+  - Default to Transmission (most common)
+- **Graceful degradation**: Essential for optional feature
+  - Check `is_seedbox_configured()` before operations
+  - Return magnet link directly if not configured
+  - User can still use the link manually
+
+#### Verification Results:
+- ✓ Code compiles without errors
+- ✓ Seedbox not configured → magnet link returned to user
+- ✓ All 51 seedbox tests pass
+- ✓ All 308 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- USER-001: User Profile Storage
+
