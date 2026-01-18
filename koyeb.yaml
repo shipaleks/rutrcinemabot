@@ -49,15 +49,15 @@ service:
   env:
     # Required - set these as secrets in Koyeb dashboard
     - key: TELEGRAM_BOT_TOKEN
-      secret: telegram-bot-token
+      secret: TELEGRAM_BOT_TOKEN
     - key: ANTHROPIC_API_KEY
-      secret: anthropic-api-key
+      secret: ANTHROPIC_API_KEY
     - key: TMDB_API_KEY
-      secret: tmdb-api-key
+      secret: TMDB_API_KEY
     - key: KINOPOISK_API_TOKEN
-      secret: kinopoisk-api-token
+      secret: KINOPOISK_API_TOKEN
     - key: ENCRYPTION_KEY
-      secret: encryption-key
+      secret: ENCRYPTION_KEY
 
     # Application configuration
     - key: ENVIRONMENT
@@ -74,7 +74,7 @@ service:
     # Webhook URL - set this to your Koyeb app URL
     # Example: https://media-concierge-bot-<your-org>.koyeb.app
     - key: WEBHOOK_URL
-      secret: webhook-url
+      secret: WEBHOOK_URL
 
     # Optional seedbox configuration (set as secrets if needed)
     # - key: SEEDBOX_HOST
