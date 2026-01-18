@@ -9,9 +9,15 @@ import sys
 from typing import NoReturn
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from src.bot.handlers import error_handler, help_handler, start_handler
+from src.bot.handlers import error_handler, help_handler
+from src.bot.onboarding import (
+    onboarding_callback_handler,
+    onboarding_start_handler,
+    settings_callback_handler,
+    settings_handler,
+)
 from src.config import settings
 from src.logger import get_logger
 
@@ -42,14 +48,19 @@ def create_application() -> Application:
     )
 
     # Register command handlers
-    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CommandHandler("start", onboarding_start_handler))
     application.add_handler(CommandHandler("help", help_handler))
+    application.add_handler(CommandHandler("settings", settings_handler))
     application.add_handler(CommandHandler("health", health_check))
+
+    # Register callback query handlers for inline keyboards
+    application.add_handler(CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"))
+    application.add_handler(CallbackQueryHandler(settings_callback_handler, pattern="^settings_"))
 
     # Register error handler
     application.add_error_handler(error_handler)
 
-    logger.info("application_created", handlers_registered=3)
+    logger.info("application_created", handlers_registered=6)
 
     return application
 

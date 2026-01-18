@@ -1037,3 +1037,97 @@ Project initialized. Ready for first iteration.
 #### Next steps:
 - ONBOARD-001: User Onboarding Flow
 
+---
+
+### Iteration 14 - ONBOARD-001: User Onboarding Flow
+**Date:** 2026-01-18
+**Status:** ✅ COMPLETED
+
+#### What was done:
+- Created `src/bot/onboarding.py` with comprehensive onboarding module (950+ lines)
+- Implemented welcome message with inline keyboard buttons:
+  - "🎬 Настроить предпочтения" to start setup
+  - "⏭ Пропустить настройку" to use defaults
+- Implemented multi-step preference setup flow:
+  - Video quality selection (720p, 1080p, 4K)
+  - Audio language selection (Русский, English, Оригинал)
+  - Genre preference selection with multi-select (6 genres)
+- Implemented settings command (/settings) with inline buttons:
+  - View and change current quality
+  - View and change current audio language
+  - View and change preferred genres
+- Updated `src/bot/main.py` to register new handlers:
+  - CommandHandler for /start (onboarding_start_handler)
+  - CommandHandler for /settings (settings_handler)
+  - CallbackQueryHandler for onboard_* callbacks
+  - CallbackQueryHandler for settings_* callbacks
+- User profile creation via UserStorage integration:
+  - Automatic user creation on /start via get_or_create_user()
+  - Preferences saved to SQLite database
+  - Graceful error handling if storage fails
+- Created comprehensive test suite `tests/test_onboarding.py`:
+  - 23 unit tests covering all functionality
+  - Tests for keyboard generation
+  - Tests for message templates
+  - Tests for handlers (/start, /settings)
+  - Tests for callback handlers (quality, audio, genre selection)
+  - Integration test for full onboarding flow
+
+#### Acceptance Criteria Verification:
+- ✅ Приветственное сообщение с inline кнопками (welcome message with inline buttons)
+- ✅ Создание профиля пользователя при /start (user profile created on /start)
+- ✅ Настройка предпочтений (качество видео, язык аудио) (preferences setup)
+- ✅ Inline кнопки для быстрой настройки (inline buttons for quick setup)
+
+#### Learnings:
+- **Inline keyboard callbacks**: Use pattern-based CallbackQueryHandler
+  - `pattern="^onboard_"` for onboarding callbacks
+  - `pattern="^settings_"` for settings callbacks
+  - Prevents collision between different callback groups
+- **Multi-step wizard pattern**: Use context.user_data to track state
+  - Store selected values between callback calls
+  - Clear on completion or timeout
+  - Need to handle None user_data case (type safety)
+- **Telegram edit_message_text**: Replace message content inline
+  - Better UX than sending new messages
+  - Works with or without keyboard
+  - Can use edit_message_reply_markup for keyboard-only updates
+- **Type safety with context.user_data**: Can be None
+  - Always check `if context.user_data is not None` before subscript
+  - Use conditional expression: `context.user_data.get(...) if context.user_data else default`
+- **Pyright warnings for conditional access**: False positives on ternary
+  - `user_data.get(...) if user_data else []` still shows warning
+  - Acceptable to ignore these specific warnings
+- **Unused parameters**: Use underscore prefix (_context) for callbacks
+  - Some handlers don't need context but must match signature
+  - Ruff/pyright accept underscore-prefixed unused params
+
+#### Architecture decisions:
+- **Separate onboarding module**: Clean separation from handlers.py
+  - All onboarding logic in single file
+  - Easy to maintain and extend
+  - Clear export in __init__.py
+- **Callback data naming convention**: Prefix-based routing
+  - `onboard_*` for onboarding flow
+  - `settings_*` for settings menu
+  - Clear, non-colliding namespaces
+- **Settings keyboard dynamic**: Show current values
+  - `get_settings_keyboard(current_quality, current_audio)`
+  - User sees what they have selected
+  - One-tap to change any setting
+- **Genre multi-select**: Toggle pattern with checkmarks
+  - ✅ prefix shows selected state
+  - Store in list, toggle on click
+  - Save only on explicit "Done" button
+
+#### Verification Results:
+- ✓ /start shows welcome message with buttons
+- ✓ Profile created in database (get_or_create_user called)
+- ✓ Preferences saved via update_preferences
+- ✓ All 23 onboarding tests pass
+- ✓ All 380 project tests pass (no regressions)
+- ✓ Linter passes: `ruff check . --fix && ruff format .`
+
+#### Next steps:
+- CONV-001: Natural Language Search
+
