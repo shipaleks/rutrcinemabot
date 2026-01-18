@@ -371,7 +371,7 @@
         "pytest проходит без ошибок",
         "Coverage report показывает > 70%"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "DOC-001",
