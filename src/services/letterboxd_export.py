@@ -353,25 +353,22 @@ def format_analysis_for_profile(analysis: LetterboxdExportAnalysis) -> str:
     sections = []
 
     # Stats
-    sections.append(f"**Letterboxd Stats:** {analysis.total_watched} watched, "
-                   f"{analysis.total_rated} rated")
+    sections.append(
+        f"**Letterboxd Stats:** {analysis.total_watched} watched, {analysis.total_rated} rated"
+    )
     if analysis.average_rating:
         sections.append(f"**Average Rating:** {analysis.average_rating:.1f}/5")
 
     # Top favorites (limit to 10)
     if analysis.favorites:
         top_favorites = analysis.favorites[:10]
-        films_list = ", ".join(
-            f"{f.name} ({f.year})" if f.year else f.name for f in top_favorites
-        )
+        films_list = ", ".join(f"{f.name} ({f.year})" if f.year else f.name for f in top_favorites)
         sections.append(f"**Favorites (4.5-5 stars):** {films_list}")
 
     # Loved films (limit to 10)
     if analysis.loved:
         top_loved = analysis.loved[:10]
-        films_list = ", ".join(
-            f"{f.name} ({f.year})" if f.year else f.name for f in top_loved
-        )
+        films_list = ", ".join(f"{f.name} ({f.year})" if f.year else f.name for f in top_loved)
         sections.append(f"**Highly Rated (4 stars):** {films_list}")
 
     # Disliked/hated (important for recommendations)
@@ -415,4 +412,6 @@ def extract_review_style(reviews: list[str]) -> str | None:
     else:
         length_desc = "detailed, lengthy"
 
-    return f"{language}, {length_desc} reviews ({len(reviews)} samples, avg {int(avg_length)} chars)"
+    return (
+        f"{language}, {length_desc} reviews ({len(reviews)} samples, avg {int(avg_length)} chars)"
+    )

@@ -23,13 +23,9 @@ from telegram.ext import (
     filters,
 )
 
-from src.config import settings
-from src.user.storage import CredentialType, UserStorage
+from src.user.storage import CredentialType, get_storage
 
 logger = structlog.get_logger(__name__)
-
-# Database path
-DB_PATH = "data/users.db"
 
 # Conversation states
 WAITING_USERNAME = 1
@@ -73,8 +69,7 @@ async def rutracker_command_handler(
     # Check if user already has credentials stored
     has_credentials = False
     try:
-        encryption_key = settings.encryption_key.get_secret_value()
-        async with UserStorage(DB_PATH, encryption_key) as storage:
+        async with get_storage() as storage:
             db_user = await storage.get_user_by_telegram_id(user.id)
             if db_user:
                 username = await storage.get_credential(
@@ -132,8 +127,7 @@ async def rutracker_callback_handler(update: Update, context: ContextTypes.DEFAU
 
     if callback_data == "rutracker_delete":
         try:
-            encryption_key = settings.encryption_key.get_secret_value()
-            async with UserStorage(DB_PATH, encryption_key) as storage:
+            async with get_storage() as storage:
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
                     await storage.delete_credential(db_user.id, CredentialType.RUTRACKER_USERNAME)
@@ -230,8 +224,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # Store credentials encrypted
     try:
-        encryption_key = settings.encryption_key.get_secret_value()
-        async with UserStorage(DB_PATH, encryption_key) as storage:
+        async with get_storage() as storage:
             # Get or create user
             db_user, created = await storage.get_or_create_user(
                 telegram_id=user.id,
@@ -251,10 +244,9 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
 
             await update.message.reply_text(
-                "✅ **Rutracker credentials сохранены!**\n\n"
+                "Rutracker credentials сохранены!\n\n"
                 "Теперь поиск на Rutracker будет работать с вашим аккаунтом.\n\n"
-                "Попробуйте: _Найди Дюну в 4K_",
-                parse_mode="Markdown",
+                "Попробуйте: Найди Дюну в 4K",
             )
 
     except Exception as e:
@@ -328,10 +320,9 @@ async def get_user_rutracker_credentials(telegram_id: int) -> tuple[str | None, 
         Tuple of (username, password) or (None, None) if not found
     """
     try:
-        encryption_key = settings.encryption_key.get_secret_value()
-        logger.debug("getting_rutracker_credentials", telegram_id=telegram_id, db_path=DB_PATH)
+        logger.debug("getting_rutracker_credentials", telegram_id=telegram_id)
 
-        async with UserStorage(DB_PATH, encryption_key) as storage:
+        async with get_storage() as storage:
             db_user = await storage.get_user_by_telegram_id(telegram_id)
             logger.debug(
                 "db_user_lookup",

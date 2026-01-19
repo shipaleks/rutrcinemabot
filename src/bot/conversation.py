@@ -1379,7 +1379,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             update,
             context,
             client.stream_message(user_message, conv_context),
-            initial_text="🤔 Думаю...",
+            initial_text="Думаю...",
         )
 
         logger.info(
