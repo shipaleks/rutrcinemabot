@@ -217,7 +217,7 @@ Now begin working on ${next_task}."
         local iter_duration=$((iter_end - iter_start))
         
         # Check for quota/rate limit errors
-        if echo "$output" | grep -qiE "rate.?limit|quota|too many requests|429|capacity|overloaded"; then
+        if echo "$output" | grep -qiE "rate.?limit|quota|too many requests|429|capacity|overloaded|out of.*usage"; then
             QUOTA_ERRORS=$((QUOTA_ERRORS + 1))
             log "WARN" "${MAGENTA}⏸️  Quota/rate limit hit (attempt ${QUOTA_ERRORS}/${MAX_QUOTA_RETRIES})${NC}"
             

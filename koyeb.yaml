@@ -76,6 +76,12 @@ service:
     - key: WEBHOOK_URL
       secret: WEBHOOK_URL
 
+    # Optional Rutracker authentication (set as secrets if needed)
+    - key: RUTRACKER_USERNAME
+      secret: RUTRACKER_USERNAME
+    - key: RUTRACKER_PASSWORD
+      secret: RUTRACKER_PASSWORD
+
     # Optional seedbox configuration (set as secrets if needed)
     # - key: SEEDBOX_HOST
     #   secret: seedbox-host

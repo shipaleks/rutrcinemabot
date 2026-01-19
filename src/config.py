@@ -51,6 +51,17 @@ class Settings(BaseSettings):
         description="Fernet encryption key for sensitive user data",
     )
 
+    # Optional: Rutracker Authentication
+    rutracker_username: str | None = Field(
+        default=None,
+        description="Rutracker username for authentication (optional)",
+    )
+
+    rutracker_password: SecretStr | None = Field(
+        default=None,
+        description="Rutracker password for authentication (optional)",
+    )
+
     # Optional: Seedbox Configuration
     seedbox_host: str | None = Field(
         default=None,
@@ -137,6 +148,16 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Check if running in production mode."""
         return self.environment == "production"
+
+    @property
+    def has_rutracker_credentials(self) -> bool:
+        """Check if Rutracker credentials are configured."""
+        return all(
+            [
+                self.rutracker_username,
+                self.rutracker_password,
+            ]
+        )
 
     @property
     def has_seedbox(self) -> bool:

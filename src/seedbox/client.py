@@ -511,7 +511,7 @@ class QBittorrentClient(SeedboxClient):
                     raise SeedboxAuthError("Invalid qBittorrent credentials")
             elif response.status_code == 403:
                 raise SeedboxAuthError(
-                    "qBittorrent: Too many failed login attempts. " "Please try again later."
+                    "qBittorrent: Too many failed login attempts. Please try again later."
                 )
             else:
                 raise SeedboxAuthError(f"qBittorrent authentication failed: {response.status_code}")

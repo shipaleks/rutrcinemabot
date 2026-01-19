@@ -94,9 +94,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("help_handler_failed", user_id=user.id, error=str(e))
         # Fallback without markdown if parsing fails
         await update.message.reply_text(
-            "/start - Приветствие\n"
-            "/help - Справка\n\n"
-            "Просто напиши название фильма для поиска!"
+            "/start - Приветствие\n/help - Справка\n\nПросто напиши название фильма для поиска!"
         )
 
 
