@@ -25,7 +25,7 @@ from telegram.ext import (
 from src.bot.conversation import handle_download_callback, handle_message
 from src.bot.handlers import error_handler, help_handler
 from src.bot.onboarding import (
-    onboarding_callback_handler,
+    get_onboarding_conversation_handler,
     onboarding_start_handler,
     settings_callback_handler,
     settings_handler,
@@ -76,8 +76,10 @@ def create_application() -> Application:
     # Register Rutracker credentials conversation handler
     application.add_handler(get_rutracker_conversation_handler())
 
+    # Register onboarding conversation handler (handles file uploads, text inputs)
+    application.add_handler(get_onboarding_conversation_handler())
+
     # Register callback query handlers for inline keyboards
-    application.add_handler(CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"))
     application.add_handler(CallbackQueryHandler(settings_callback_handler, pattern="^settings_"))
     application.add_handler(CallbackQueryHandler(handle_download_callback, pattern="^download_"))
 
