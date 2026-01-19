@@ -218,7 +218,7 @@ class StreamingMessageHandler:
     async def stream_text(
         self,
         text_iterator: AsyncIterator[str],
-        initial_text: str = "🤔 Думаю...",
+        initial_text: str = "Думаю...",
     ) -> str:
         """Stream text from an async iterator to the Telegram message.
 
@@ -288,7 +288,7 @@ async def send_streaming_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     text_iterator: AsyncIterator[str],
-    initial_text: str = "🤔 Думаю...",
+    initial_text: str = "Думаю...",
 ) -> str:
     """Convenience function to send a streaming message.
 

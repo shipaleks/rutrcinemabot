@@ -119,39 +119,47 @@ SKIP_MESSAGE = """Хорошо, используем стандартные на
 
 def get_welcome_keyboard() -> InlineKeyboardMarkup:
     """Welcome screen keyboard."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Настроить", callback_data="onboard_setup")],
-        [InlineKeyboardButton("Пропустить", callback_data="onboard_skip")],
-    ])
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Настроить", callback_data="onboard_setup")],
+            [InlineKeyboardButton("Пропустить", callback_data="onboard_skip")],
+        ]
+    )
 
 
 def get_skip_keyboard() -> InlineKeyboardMarkup:
     """Skip button keyboard."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Пропустить", callback_data="onboard_skip_step")],
-    ])
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Пропустить", callback_data="onboard_skip_step")],
+        ]
+    )
 
 
 def get_quality_keyboard() -> InlineKeyboardMarkup:
     """Quality selection keyboard."""
-    return InlineKeyboardMarkup([
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("720p", callback_data="onboard_quality_720p"),
-            InlineKeyboardButton("1080p", callback_data="onboard_quality_1080p"),
-            InlineKeyboardButton("4K", callback_data="onboard_quality_4K"),
-        ],
-    ])
+            [
+                InlineKeyboardButton("720p", callback_data="onboard_quality_720p"),
+                InlineKeyboardButton("1080p", callback_data="onboard_quality_1080p"),
+                InlineKeyboardButton("4K", callback_data="onboard_quality_4K"),
+            ],
+        ]
+    )
 
 
 def get_audio_keyboard() -> InlineKeyboardMarkup:
     """Audio language keyboard."""
-    return InlineKeyboardMarkup([
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("Русский", callback_data="onboard_audio_ru"),
-            InlineKeyboardButton("English", callback_data="onboard_audio_en"),
-            InlineKeyboardButton("Оригинал", callback_data="onboard_audio_original"),
-        ],
-    ])
+            [
+                InlineKeyboardButton("Русский", callback_data="onboard_audio_ru"),
+                InlineKeyboardButton("English", callback_data="onboard_audio_en"),
+                InlineKeyboardButton("Оригинал", callback_data="onboard_audio_original"),
+            ],
+        ]
+    )
 
 
 def get_settings_keyboard(
@@ -162,13 +170,19 @@ def get_settings_keyboard(
     audio_display = {"ru": "Русский", "en": "English", "original": "Оригинал"}.get(
         current_audio, current_audio
     )
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Качество: {current_quality}", callback_data="settings_quality")],
-        [InlineKeyboardButton(f"Аудио: {audio_display}", callback_data="settings_audio")],
-        [InlineKeyboardButton("Letterboxd", callback_data="settings_letterboxd")],
-        [InlineKeyboardButton("Rutracker", callback_data="settings_rutracker")],
-        [InlineKeyboardButton("Закрыть", callback_data="settings_close")],
-    ])
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"Качество: {current_quality}", callback_data="settings_quality"
+                )
+            ],
+            [InlineKeyboardButton(f"Аудио: {audio_display}", callback_data="settings_audio")],
+            [InlineKeyboardButton("Letterboxd", callback_data="settings_letterboxd")],
+            [InlineKeyboardButton("Rutracker", callback_data="settings_rutracker")],
+            [InlineKeyboardButton("Закрыть", callback_data="settings_close")],
+        ]
+    )
 
 
 # =============================================================================
@@ -401,8 +415,7 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
     # Validate file
     if not document.file_name or not document.file_name.endswith(".zip"):
         await message.reply_text(
-            "Нужен ZIP-файл с экспортом Letterboxd.\n"
-            "Скачай его на letterboxd.com/settings/data/",
+            "Нужен ZIP-файл с экспортом Letterboxd.\nСкачай его на letterboxd.com/settings/data/",
             reply_markup=get_skip_keyboard(),
         )
         return WAITING_LETTERBOXD_FILE
@@ -471,8 +484,7 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
                 if analysis.hated or analysis.disliked:
                     disliked_all = analysis.hated + analysis.disliked[:10]
                     disliked_text = ", ".join(
-                        f"{f.name} ({f.year})" if f.year else f.name
-                        for f in disliked_all[:15]
+                        f"{f.name} ({f.year})" if f.year else f.name for f in disliked_all[:15]
                     )
                     await profile_manager.update_section(
                         db_user.id,
@@ -525,8 +537,7 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
     except ValueError as e:
         logger.warning("letterboxd_parse_error", error=str(e))
         await processing_msg.edit_text(
-            f"Ошибка обработки файла: {e}\n"
-            "Убедись, что это ZIP-файл с экспортом Letterboxd.",
+            f"Ошибка обработки файла: {e}\nУбедись, что это ZIP-файл с экспортом Letterboxd.",
             reply_markup=get_skip_keyboard(),
         )
         return WAITING_LETTERBOXD_FILE
@@ -724,14 +735,16 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
             await query.delete_message()
 
         elif callback == "settings_quality":
-            keyboard = InlineKeyboardMarkup([
+            keyboard = InlineKeyboardMarkup(
                 [
-                    InlineKeyboardButton("720p", callback_data="set_quality_720p"),
-                    InlineKeyboardButton("1080p", callback_data="set_quality_1080p"),
-                    InlineKeyboardButton("4K", callback_data="set_quality_4K"),
-                ],
-                [InlineKeyboardButton("Назад", callback_data="settings_back")],
-            ])
+                    [
+                        InlineKeyboardButton("720p", callback_data="set_quality_720p"),
+                        InlineKeyboardButton("1080p", callback_data="set_quality_1080p"),
+                        InlineKeyboardButton("4K", callback_data="set_quality_4K"),
+                    ],
+                    [InlineKeyboardButton("Назад", callback_data="settings_back")],
+                ]
+            )
             await query.edit_message_text(
                 "**Качество видео**\n\nВыбери предпочитаемое качество:",
                 parse_mode="Markdown",
@@ -739,14 +752,16 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
             )
 
         elif callback == "settings_audio":
-            keyboard = InlineKeyboardMarkup([
+            keyboard = InlineKeyboardMarkup(
                 [
-                    InlineKeyboardButton("Русский", callback_data="set_audio_ru"),
-                    InlineKeyboardButton("English", callback_data="set_audio_en"),
-                    InlineKeyboardButton("Оригинал", callback_data="set_audio_original"),
-                ],
-                [InlineKeyboardButton("Назад", callback_data="settings_back")],
-            ])
+                    [
+                        InlineKeyboardButton("Русский", callback_data="set_audio_ru"),
+                        InlineKeyboardButton("English", callback_data="set_audio_en"),
+                        InlineKeyboardButton("Оригинал", callback_data="set_audio_original"),
+                    ],
+                    [InlineKeyboardButton("Назад", callback_data="settings_back")],
+                ]
+            )
             await query.edit_message_text(
                 "**Язык аудио**\n\nВыбери предпочитаемый язык:",
                 parse_mode="Markdown",
@@ -807,19 +822,22 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
                 "Скачать: letterboxd.com/settings/data/\n\n"
                 "Или нажми 'Назад'.",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Назад", callback_data="settings_back")],
-                ]),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("Назад", callback_data="settings_back")],
+                    ]
+                ),
             )
 
         elif callback == "settings_rutracker":
             await query.edit_message_text(
-                "**Rutracker**\n\n"
-                "Для настройки Rutracker используй команду /rutracker",
+                "**Rutracker**\n\nДля настройки Rutracker используй команду /rutracker",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Назад", callback_data="settings_back")],
-                ]),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("Назад", callback_data="settings_back")],
+                    ]
+                ),
             )
 
     except Exception as e:
