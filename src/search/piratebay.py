@@ -7,6 +7,7 @@ with automatic fallback to mirrors when the main site is unavailable.
 Note: PirateBay has many mirrors that change frequently.
 """
 
+import asyncio
 import contextlib
 import re
 from urllib.parse import quote_plus
@@ -25,6 +26,10 @@ logger = structlog.get_logger(__name__)
 
 # PirateBay API endpoint (recommended - site requires JavaScript for HTML)
 PIRATEBAY_API_URL = "https://apibay.org"
+
+# API retry settings (API is flaky, returns 502 sometimes)
+API_MAX_RETRIES = 3
+API_RETRY_DELAY = 0.5  # seconds
 
 # PirateBay mirrors (frequently change, ordered by reliability)
 # Note: Most mirrors now require JavaScript to render results
@@ -426,88 +431,116 @@ class PirateBayClient:
 
         logger.info("searching_piratebay_api", query=query, api_url=api_url)
 
-        try:
-            response = await self.client.get(api_url, params=params)
-            response.raise_for_status()
+        # Retry loop for flaky API (502 errors)
+        last_error: Exception | None = None
+        response = None
 
-            data = response.json()
-
-            # API returns a list of results
-            # If no results, returns: [{"id":"0","name":"No results returned",...}]
-            if not data or (len(data) == 1 and data[0].get("id") == "0"):
-                logger.info("api_no_results", query=query)
-                return []
-
-            results: list[PirateBayResult] = []
-
-            for item in data[:MAX_RESULTS]:
-                try:
-                    # Extract fields from API response
-                    info_hash = item.get("info_hash", "")
-                    name = item.get("name", "")
-                    size_bytes = int(item.get("size", 0))
-                    seeds = int(item.get("seeders", 0))
-                    leeches = int(item.get("leechers", 0))
-                    username = item.get("username", "")
-                    added = item.get("added", "")
-                    category_id = item.get("category", "")
-
-                    if not name or not info_hash or len(info_hash) != 40:
-                        continue
-
-                    # Build magnet link from info hash
-                    magnet = build_magnet_link(info_hash, name)
-
-                    # Format size
-                    size = self._format_size(size_bytes)
-
-                    # Detect quality from title
-                    quality = detect_quality(name)
-
-                    # Format upload date
-                    uploaded = None
-                    if added and added != "0":
-                        with contextlib.suppress(Exception):
-                            from datetime import datetime
-
-                            dt = datetime.fromtimestamp(int(added))
-                            uploaded = dt.strftime("%Y-%m-%d")
-
-                    result = PirateBayResult(
-                        title=name,
-                        size=size,
-                        size_bytes=size_bytes,
-                        seeds=seeds,
-                        leeches=leeches,
-                        magnet=magnet,
-                        quality=quality,
-                        category=category_id,
-                        uploader=username if username else None,
-                        uploaded=uploaded,
+        for attempt in range(API_MAX_RETRIES):
+            try:
+                response = await self.client.get(api_url, params=params)
+                response.raise_for_status()
+                break  # Success, exit retry loop
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (502, 503, 504) and attempt < API_MAX_RETRIES - 1:
+                    logger.warning(
+                        "api_retry",
+                        attempt=attempt + 1,
+                        max_retries=API_MAX_RETRIES,
+                        status=e.response.status_code,
                     )
-                    results.append(result)
+                    last_error = e
+                    await asyncio.sleep(API_RETRY_DELAY * (attempt + 1))
+                    continue
+                # Non-retryable error or last attempt
+                logger.error("api_http_error", status=e.response.status_code)
+                raise PirateBayUnavailableError(
+                    f"PirateBay API returned error {e.response.status_code}"
+                ) from e
+            except httpx.ConnectError as e:
+                logger.error("api_connection_error", error=str(e))
+                raise PirateBayUnavailableError(f"Cannot connect to PirateBay API: {e}") from e
+            except httpx.TimeoutException as e:
+                logger.error("api_timeout_error", error=str(e))
+                raise PirateBayUnavailableError(f"API request timed out: {e}") from e
+        else:
+            # All retries exhausted
+            if last_error:
+                logger.error("api_all_retries_failed", attempts=API_MAX_RETRIES)
+                raise PirateBayUnavailableError(
+                    f"PirateBay API failed after {API_MAX_RETRIES} retries"
+                ) from last_error
 
-                except (ValueError, KeyError, TypeError) as e:
-                    logger.warning("failed_to_parse_api_result", error=str(e), item=item)
+        # Parse response
+        if response is None:
+            raise PirateBayUnavailableError("No response received from API")
+
+        try:
+            data = response.json()
+        except Exception as e:
+            logger.error("api_json_error", error=str(e))
+            raise PirateBayError(f"Failed to parse API response: {e}") from e
+
+        # API returns a list of results
+        # If no results, returns: [{"id":"0","name":"No results returned",...}]
+        if not data or (len(data) == 1 and data[0].get("id") == "0"):
+            logger.info("api_no_results", query=query)
+            return []
+
+        results: list[PirateBayResult] = []
+
+        for item in data[:MAX_RESULTS]:
+            try:
+                # Extract fields from API response
+                info_hash = item.get("info_hash", "")
+                name = item.get("name", "")
+                size_bytes = int(item.get("size", 0))
+                seeds = int(item.get("seeders", 0))
+                leeches = int(item.get("leechers", 0))
+                username = item.get("username", "")
+                added = item.get("added", "")
+                category_id = item.get("category", "")
+
+                if not name or not info_hash or len(info_hash) != 40:
                     continue
 
-            logger.info("api_results_found", count=len(results))
-            return results
+                # Build magnet link from info hash
+                magnet = build_magnet_link(info_hash, name)
 
-        except httpx.ConnectError as e:
-            logger.error("api_connection_error", error=str(e))
-            raise PirateBayUnavailableError(f"Cannot connect to PirateBay API: {e}") from e
-        except httpx.TimeoutException as e:
-            logger.error("api_timeout_error", error=str(e))
-            raise PirateBayUnavailableError(f"API request timed out: {e}") from e
-        except httpx.HTTPStatusError as e:
-            logger.error("api_http_error", status=e.response.status_code)
-            raise PirateBayUnavailableError(
-                f"PirateBay API returned error {e.response.status_code}"
-            ) from e
-        except Exception as e:
-            logger.error("api_error", error=str(e))
-            raise PirateBayError(f"API error: {e}") from e
+                # Format size
+                size = self._format_size(size_bytes)
+
+                # Detect quality from title
+                quality = detect_quality(name)
+
+                # Format upload date
+                uploaded = None
+                if added and added != "0":
+                    with contextlib.suppress(Exception):
+                        from datetime import datetime
+
+                        dt = datetime.fromtimestamp(int(added))
+                        uploaded = dt.strftime("%Y-%m-%d")
+
+                result = PirateBayResult(
+                    title=name,
+                    size=size,
+                    size_bytes=size_bytes,
+                    seeds=seeds,
+                    leeches=leeches,
+                    magnet=magnet,
+                    quality=quality,
+                    category=category_id,
+                    uploader=username if username else None,
+                    uploaded=uploaded,
+                )
+                results.append(result)
+
+            except (ValueError, KeyError, TypeError) as e:
+                logger.warning("failed_to_parse_api_result", error=str(e), item=item)
+                continue
+
+        logger.info("api_results_found", count=len(results))
+        return results
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
