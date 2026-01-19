@@ -25,7 +25,8 @@ from src.media.tmdb import TMDBClient, TMDBError
 from src.search.piratebay import PirateBayClient, PirateBayError
 from src.search.rutracker import RutrackerClient, RutrackerError
 from src.seedbox import send_magnet_to_seedbox
-from src.user.storage import UserStorage
+from src.user.profile import ProfileManager
+from src.user.storage import UserStorage, get_storage
 
 logger = get_logger(__name__)
 
@@ -544,6 +545,636 @@ async def handle_seedbox_download(tool_input: dict[str, Any]) -> str:
     )
 
 
+# =============================================================================
+# Extended Tool Handlers (Phase 1-6)
+# =============================================================================
+
+
+async def handle_read_user_profile(tool_input: dict[str, Any]) -> str:
+    """Handle read_user_profile tool call.
+
+    Args:
+        tool_input: Tool parameters (user_id).
+
+    Returns:
+        JSON string with user's markdown profile.
+    """
+    user_id = tool_input.get("user_id")
+
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    logger.info("read_user_profile", user_id=user_id)
+
+    try:
+        async with get_storage() as storage:
+            profile_manager = ProfileManager(storage)
+            profile_md = await profile_manager.get_or_create_profile(user_id)
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "profile_md": profile_md,
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("read_user_profile_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_update_user_profile(tool_input: dict[str, Any]) -> str:
+    """Handle update_user_profile tool call.
+
+    Args:
+        tool_input: Tool parameters (user_id, section, content).
+
+    Returns:
+        JSON string with update status.
+    """
+    user_id = tool_input.get("user_id")
+    section = tool_input.get("section")
+    content = tool_input.get("content")
+
+    if not all([user_id, section, content]):
+        return json.dumps(
+            {"status": "error", "error": "user_id, section, and content are required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("update_user_profile", user_id=user_id, section=section)
+
+    try:
+        async with get_storage() as storage:
+            profile_manager = ProfileManager(storage)
+
+            if section == "notable_interactions":
+                await profile_manager.add_notable_interaction(user_id, content)
+            elif section == "conversation_highlights":
+                await profile_manager.add_conversation_highlight(user_id, content)
+            else:
+                await profile_manager.update_section(user_id, section, content)
+
+            return json.dumps({"status": "success", "section": section}, ensure_ascii=False)
+
+    except Exception as e:
+        logger.warning("update_user_profile_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_add_to_watchlist(tool_input: dict[str, Any]) -> str:
+    """Handle add_to_watchlist tool call."""
+    user_id = tool_input.get("user_id")
+    tmdb_id = tool_input.get("tmdb_id")
+    media_type = tool_input.get("media_type", "movie")
+    title = tool_input.get("title", "Unknown")
+    year = tool_input.get("year")
+    priority = tool_input.get("priority", 0)
+    notes = tool_input.get("notes")
+
+    if not user_id or not tmdb_id:
+        return json.dumps(
+            {"status": "error", "error": "user_id and tmdb_id are required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("add_to_watchlist", user_id=user_id, tmdb_id=tmdb_id, title=title)
+
+    try:
+        async with get_storage() as storage:
+            # Check if already in watchlist
+            if await storage.is_in_watchlist(user_id, tmdb_id=tmdb_id):
+                return json.dumps(
+                    {"status": "already_exists", "message": f"'{title}' уже в списке"},
+                    ensure_ascii=False,
+                )
+
+            item = await storage.add_to_watchlist(
+                user_id=user_id,
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                title=title,
+                year=year,
+                priority=priority,
+                notes=notes,
+            )
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "message": f"'{title}' добавлен в список 'хочу посмотреть'",
+                    "item_id": item.id,
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("add_to_watchlist_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_remove_from_watchlist(tool_input: dict[str, Any]) -> str:
+    """Handle remove_from_watchlist tool call."""
+    user_id = tool_input.get("user_id")
+    tmdb_id = tool_input.get("tmdb_id")
+
+    if not user_id or not tmdb_id:
+        return json.dumps(
+            {"status": "error", "error": "user_id and tmdb_id are required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("remove_from_watchlist", user_id=user_id, tmdb_id=tmdb_id)
+
+    try:
+        async with get_storage() as storage:
+            removed = await storage.remove_from_watchlist(user_id, tmdb_id=tmdb_id)
+
+            if removed:
+                return json.dumps(
+                    {"status": "success", "message": "Удалено из списка"}, ensure_ascii=False
+                )
+            return json.dumps(
+                {"status": "not_found", "message": "Не найдено в списке"}, ensure_ascii=False
+            )
+
+    except Exception as e:
+        logger.warning("remove_from_watchlist_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_watchlist(tool_input: dict[str, Any]) -> str:
+    """Handle get_watchlist tool call."""
+    user_id = tool_input.get("user_id")
+    media_type = tool_input.get("media_type")
+    limit = tool_input.get("limit", 20)
+
+    if not user_id:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    logger.info("get_watchlist", user_id=user_id, media_type=media_type)
+
+    try:
+        async with get_storage() as storage:
+            items = await storage.get_watchlist(user_id, media_type=media_type, limit=limit)
+
+            formatted = [
+                {
+                    "tmdb_id": item.tmdb_id,
+                    "title": item.title,
+                    "media_type": item.media_type,
+                    "year": item.year,
+                    "priority": item.priority,
+                    "notes": item.notes,
+                    "added_at": item.added_at.isoformat(),
+                }
+                for item in items
+            ]
+
+            return json.dumps(
+                {"status": "success", "count": len(formatted), "items": formatted},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("get_watchlist_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_mark_watched(tool_input: dict[str, Any]) -> str:
+    """Handle mark_watched tool call."""
+    user_id = tool_input.get("user_id")
+    tmdb_id = tool_input.get("tmdb_id")
+    media_type = tool_input.get("media_type", "movie")
+    title = tool_input.get("title", "Unknown")
+    year = tool_input.get("year")
+    rating = tool_input.get("rating")
+    review = tool_input.get("review")
+
+    if not user_id or not tmdb_id:
+        return json.dumps(
+            {"status": "error", "error": "user_id and tmdb_id are required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("mark_watched", user_id=user_id, tmdb_id=tmdb_id, title=title, rating=rating)
+
+    try:
+        async with get_storage() as storage:
+            # Check if already watched
+            if await storage.is_watched(user_id, tmdb_id=tmdb_id):
+                return json.dumps(
+                    {"status": "already_watched", "message": f"'{title}' уже в истории просмотров"},
+                    ensure_ascii=False,
+                )
+
+            # Add to watched
+            item = await storage.add_watched(
+                user_id=user_id,
+                media_type=media_type,
+                title=title,
+                tmdb_id=tmdb_id,
+                year=year,
+                rating=rating,
+                review=review,
+            )
+
+            # Remove from watchlist if it was there
+            await storage.remove_from_watchlist(user_id, tmdb_id=tmdb_id)
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "message": f"'{title}' отмечен как просмотренный",
+                    "item_id": item.id,
+                    "ask_for_rating": rating is None,
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("mark_watched_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_rate_content(tool_input: dict[str, Any]) -> str:
+    """Handle rate_content tool call."""
+    user_id = tool_input.get("user_id")
+    tmdb_id = tool_input.get("tmdb_id")
+    rating = tool_input.get("rating")
+    review = tool_input.get("review")
+
+    if not user_id or not tmdb_id or rating is None:
+        return json.dumps(
+            {"status": "error", "error": "user_id, tmdb_id, and rating are required"},
+            ensure_ascii=False,
+        )
+
+    # Validate rating
+    if not 1 <= rating <= 10:
+        return json.dumps(
+            {"status": "error", "error": "rating must be between 1 and 10"},
+            ensure_ascii=False,
+        )
+
+    logger.info("rate_content", user_id=user_id, tmdb_id=tmdb_id, rating=rating)
+
+    try:
+        async with get_storage() as storage:
+            item = await storage.update_watched_rating(
+                user_id=user_id,
+                tmdb_id=tmdb_id,
+                rating=rating,
+                review=review,
+            )
+
+            if item:
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "message": f"Оценка {rating}/10 сохранена",
+                        "suggest_recommendations": rating >= 8,
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"status": "not_found", "message": "Контент не найден в истории просмотров"},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("rate_content_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_watch_history(tool_input: dict[str, Any]) -> str:
+    """Handle get_watch_history tool call."""
+    user_id = tool_input.get("user_id")
+    media_type = tool_input.get("media_type")
+    limit = tool_input.get("limit", 20)
+
+    if not user_id:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    logger.info("get_watch_history", user_id=user_id, media_type=media_type)
+
+    try:
+        async with get_storage() as storage:
+            items = await storage.get_watched(user_id, media_type=media_type, limit=limit)
+
+            formatted = [
+                {
+                    "tmdb_id": item.tmdb_id,
+                    "title": item.title,
+                    "media_type": item.media_type,
+                    "year": item.year,
+                    "rating": item.rating,
+                    "review": item.review,
+                    "watched_at": item.watched_at.isoformat(),
+                }
+                for item in items
+            ]
+
+            return json.dumps(
+                {"status": "success", "count": len(formatted), "items": formatted},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("get_watch_history_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_add_to_blocklist(tool_input: dict[str, Any]) -> str:
+    """Handle add_to_blocklist tool call."""
+    user_id = tool_input.get("user_id")
+    block_type = tool_input.get("block_type")
+    block_value = tool_input.get("block_value")
+    block_level = tool_input.get("block_level", "dont_recommend")
+    notes = tool_input.get("notes")
+
+    if not all([user_id, block_type, block_value]):
+        return json.dumps(
+            {"status": "error", "error": "user_id, block_type, and block_value are required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("add_to_blocklist", user_id=user_id, block_type=block_type, block_value=block_value)
+
+    try:
+        async with get_storage() as storage:
+            await storage.add_to_blocklist(
+                user_id=user_id,
+                block_type=block_type,
+                block_value=block_value,
+                block_level=block_level,
+                notes=notes,
+            )
+
+            # Update profile blocklist section
+            profile_manager = ProfileManager(storage)
+            await profile_manager.sync_blocklist(user_id)
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "message": f"'{block_value}' добавлен в блоклист ({block_level})",
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("add_to_blocklist_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_blocklist(tool_input: dict[str, Any]) -> str:
+    """Handle get_blocklist tool call."""
+    user_id = tool_input.get("user_id")
+    block_type = tool_input.get("block_type")
+
+    if not user_id:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    logger.info("get_blocklist", user_id=user_id, block_type=block_type)
+
+    try:
+        async with get_storage() as storage:
+            items = await storage.get_blocklist(user_id, block_type=block_type)
+
+            formatted = [
+                {
+                    "block_type": item.block_type,
+                    "block_value": item.block_value,
+                    "block_level": item.block_level,
+                    "notes": item.notes,
+                }
+                for item in items
+            ]
+
+            return json.dumps(
+                {"status": "success", "count": len(formatted), "items": formatted},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("get_blocklist_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
+    """Handle create_monitor tool call."""
+    user_id = tool_input.get("user_id")
+    title = tool_input.get("title")
+    tmdb_id = tool_input.get("tmdb_id")
+    media_type = tool_input.get("media_type", "movie")
+    quality = tool_input.get("quality", "1080p")
+    auto_download = tool_input.get("auto_download", False)
+
+    if not user_id or not title:
+        return json.dumps(
+            {"status": "error", "error": "user_id and title are required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("create_monitor", user_id=user_id, title=title, quality=quality)
+
+    try:
+        async with get_storage() as storage:
+            monitor = await storage.create_monitor(
+                user_id=user_id,
+                title=title,
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                quality=quality,
+                auto_download=auto_download,
+            )
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "message": f"Мониторинг '{title}' создан",
+                    "monitor_id": monitor.id,
+                    "quality": quality,
+                    "auto_download": auto_download,
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("create_monitor_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_monitors(tool_input: dict[str, Any]) -> str:
+    """Handle get_monitors tool call."""
+    user_id = tool_input.get("user_id")
+    status = tool_input.get("status")
+
+    if not user_id:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    logger.info("get_monitors", user_id=user_id, status=status)
+
+    try:
+        async with get_storage() as storage:
+            monitors = await storage.get_monitors(user_id=user_id, status=status)
+
+            formatted = [
+                {
+                    "id": m.id,
+                    "title": m.title,
+                    "tmdb_id": m.tmdb_id,
+                    "media_type": m.media_type,
+                    "quality": m.quality,
+                    "auto_download": m.auto_download,
+                    "status": m.status,
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in monitors
+            ]
+
+            return json.dumps(
+                {"status": "success", "count": len(formatted), "monitors": formatted},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("get_monitors_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_cancel_monitor(tool_input: dict[str, Any]) -> str:
+    """Handle cancel_monitor tool call."""
+    monitor_id = tool_input.get("monitor_id")
+
+    if not monitor_id:
+        return json.dumps(
+            {"status": "error", "error": "monitor_id is required"}, ensure_ascii=False
+        )
+
+    logger.info("cancel_monitor", monitor_id=monitor_id)
+
+    try:
+        async with get_storage() as storage:
+            deleted = await storage.delete_monitor(monitor_id)
+
+            if deleted:
+                return json.dumps(
+                    {"status": "success", "message": "Мониторинг отменён"}, ensure_ascii=False
+                )
+            return json.dumps(
+                {"status": "not_found", "message": "Мониторинг не найден"}, ensure_ascii=False
+            )
+
+    except Exception as e:
+        logger.warning("cancel_monitor_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_crew_stats(tool_input: dict[str, Any]) -> str:
+    """Handle get_crew_stats tool call."""
+    user_id = tool_input.get("user_id")
+    role = tool_input.get("role")
+    min_films = tool_input.get("min_films", 2)
+
+    if not user_id:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    logger.info("get_crew_stats", user_id=user_id, role=role, min_films=min_films)
+
+    try:
+        async with get_storage() as storage:
+            stats = await storage.get_crew_stats(user_id=user_id, role=role, min_films=min_films)
+
+            formatted = [
+                {
+                    "person_name": s.person_name,
+                    "person_id": s.person_id,
+                    "role": s.role,
+                    "films_count": s.films_count,
+                    "avg_rating": round(s.avg_rating, 1),
+                }
+                for s in stats
+            ]
+
+            return json.dumps(
+                {"status": "success", "count": len(formatted), "stats": formatted},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("get_crew_stats_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_letterboxd_sync(tool_input: dict[str, Any]) -> str:
+    """Handle letterboxd_sync tool call (RSS-based import)."""
+    from src.services.letterboxd_rss import LetterboxdRSSError, sync_letterboxd_to_storage
+
+    user_id = tool_input.get("user_id")
+    letterboxd_username = tool_input.get("letterboxd_username")
+
+    if not user_id or not letterboxd_username:
+        return json.dumps(
+            {"status": "error", "error": "user_id and letterboxd_username are required"},
+            ensure_ascii=False,
+        )
+
+    sync_watchlist = tool_input.get("sync_watchlist", True)
+    sync_diary = tool_input.get("sync_diary", True)
+    diary_limit = tool_input.get("diary_limit", 50)
+
+    logger.info(
+        "letterboxd_rss_sync",
+        user_id=user_id,
+        username=letterboxd_username,
+        sync_watchlist=sync_watchlist,
+        sync_diary=sync_diary,
+    )
+
+    try:
+        async with get_storage() as storage:
+            results = await sync_letterboxd_to_storage(
+                username=letterboxd_username,
+                storage=storage,
+                user_id=user_id,
+                sync_watchlist=sync_watchlist,
+                sync_diary=sync_diary,
+                diary_limit=diary_limit,
+            )
+
+            # Build response message
+            parts = []
+            if sync_watchlist:
+                parts.append(
+                    f"Watchlist: импортировано {results['watchlist_imported']}, "
+                    f"пропущено {results['watchlist_skipped']}"
+                )
+            if sync_diary:
+                parts.append(
+                    f"Дневник: импортировано {results['diary_imported']}, "
+                    f"пропущено {results['diary_skipped']}"
+                )
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "message": ". ".join(parts),
+                    **results,
+                },
+                ensure_ascii=False,
+            )
+
+    except LetterboxdRSSError as e:
+        logger.warning("letterboxd_rss_sync_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("letterboxd_rss_sync_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
 def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
     """Create and configure a tool executor with all handlers.
 
@@ -561,13 +1192,37 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
 
     executor.register_handlers(
         {
+            # Core search tools
             "rutracker_search": rutracker_handler,
             "piratebay_search": handle_piratebay_search,
             "tmdb_search": handle_tmdb_search,
             "tmdb_credits": handle_tmdb_credits,
             "kinopoisk_search": handle_kinopoisk_search,
+            # User profile tools
             "get_user_profile": handle_get_user_profile,
+            "read_user_profile": handle_read_user_profile,
+            "update_user_profile": handle_update_user_profile,
+            # Download tools
             "seedbox_download": handle_seedbox_download,
+            # Watchlist tools
+            "add_to_watchlist": handle_add_to_watchlist,
+            "remove_from_watchlist": handle_remove_from_watchlist,
+            "get_watchlist": handle_get_watchlist,
+            # Watch history & ratings
+            "mark_watched": handle_mark_watched,
+            "rate_content": handle_rate_content,
+            "get_watch_history": handle_get_watch_history,
+            # Blocklist tools
+            "add_to_blocklist": handle_add_to_blocklist,
+            "get_blocklist": handle_get_blocklist,
+            # Monitoring tools
+            "create_monitor": handle_create_monitor,
+            "get_monitors": handle_get_monitors,
+            "cancel_monitor": handle_cancel_monitor,
+            # Analytics tools
+            "get_crew_stats": handle_get_crew_stats,
+            # External service sync
+            "letterboxd_sync": handle_letterboxd_sync,
         }
     )
 

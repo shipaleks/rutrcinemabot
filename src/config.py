@@ -51,6 +51,12 @@ class Settings(BaseSettings):
         description="Fernet encryption key for sensitive user data",
     )
 
+    # Database Configuration (Postgres preferred, SQLite fallback)
+    database_url: SecretStr | None = Field(
+        default=None,
+        description="PostgreSQL connection URL (e.g., postgresql://user:pass@host:5432/db)",
+    )
+
     # Optional: Rutracker Authentication
     rutracker_username: str | None = Field(
         default=None,
@@ -76,6 +82,22 @@ class Settings(BaseSettings):
     seedbox_password: SecretStr | None = Field(
         default=None,
         description="Seedbox password (optional)",
+    )
+
+    # Optional: Letterboxd API Configuration
+    letterboxd_client_id: str | None = Field(
+        default=None,
+        description="Letterboxd API client ID (requires API approval)",
+    )
+
+    letterboxd_client_secret: SecretStr | None = Field(
+        default=None,
+        description="Letterboxd API client secret",
+    )
+
+    letterboxd_redirect_uri: str = Field(
+        default="https://localhost/callback",
+        description="Letterboxd OAuth redirect URI",
     )
 
     # Application Configuration
@@ -167,6 +189,21 @@ class Settings(BaseSettings):
                 self.seedbox_host,
                 self.seedbox_user,
                 self.seedbox_password,
+            ]
+        )
+
+    @property
+    def has_database_url(self) -> bool:
+        """Check if external database (Postgres) is configured."""
+        return self.database_url is not None
+
+    @property
+    def has_letterboxd(self) -> bool:
+        """Check if Letterboxd API is configured."""
+        return all(
+            [
+                self.letterboxd_client_id,
+                self.letterboxd_client_secret,
             ]
         )
 

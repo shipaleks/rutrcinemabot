@@ -33,11 +33,15 @@ from src.bot.onboarding import (
 from src.bot.rutracker_auth import get_rutracker_conversation_handler
 from src.config import settings
 from src.logger import get_logger
+from src.monitoring import MonitoringScheduler
 
 logger = get_logger(__name__)
 
 # Global flag to track bot health
 _bot_healthy = False
+
+# Global monitoring scheduler instance
+_monitoring_scheduler: MonitoringScheduler | None = None
 
 
 async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -97,7 +101,7 @@ async def run_polling(application: Application) -> None:
     Args:
         application: The bot application instance
     """
-    global _bot_healthy
+    global _bot_healthy, _monitoring_scheduler
 
     health_port = settings.health_port
     logger.info("starting_polling_mode", health_port=health_port)
@@ -112,6 +116,10 @@ async def run_polling(application: Application) -> None:
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
     )
+
+    # Start monitoring scheduler
+    _monitoring_scheduler = MonitoringScheduler(application.bot)
+    _monitoring_scheduler.start()
 
     # Mark bot as healthy
     _bot_healthy = True
@@ -131,6 +139,9 @@ async def run_polling(application: Application) -> None:
     finally:
         # Cleanup
         _bot_healthy = False
+        if _monitoring_scheduler:
+            _monitoring_scheduler.stop()
+            _monitoring_scheduler = None
         health_server.close()
         await health_server.wait_closed()
         await application.updater.stop()
@@ -233,7 +244,7 @@ async def run_webhook(application: Application) -> None:
     Args:
         application: The bot application instance
     """
-    global _bot_healthy
+    global _bot_healthy, _monitoring_scheduler
 
     webhook_url = settings.webhook_url
     webhook_path = settings.webhook_path
@@ -274,6 +285,10 @@ async def run_webhook(application: Application) -> None:
         webhook_url=f"{webhook_url}{webhook_path}",
     )
 
+    # Start monitoring scheduler
+    _monitoring_scheduler = MonitoringScheduler(application.bot)
+    _monitoring_scheduler.start()
+
     # Mark bot as healthy now that everything is started
     _bot_healthy = True
 
@@ -292,6 +307,9 @@ async def run_webhook(application: Application) -> None:
     finally:
         # Cleanup
         _bot_healthy = False
+        if _monitoring_scheduler:
+            _monitoring_scheduler.stop()
+            _monitoring_scheduler = None
         health_server.close()
         await health_server.wait_closed()
         await application.updater.stop()
