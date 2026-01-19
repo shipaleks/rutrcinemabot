@@ -832,24 +832,34 @@ def get_onboarding_conversation_handler() -> ConversationHandler:
     Returns:
         ConversationHandler for onboarding
     """
+    from telegram.ext import CallbackQueryHandler
+
     return ConversationHandler(
-        entry_points=[],
+        entry_points=[
+            # Entry from "Настроить" button
+            CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"),
+        ],
         states={
             WAITING_LETTERBOXD_FILE: [
                 MessageHandler(filters.Document.ZIP, handle_letterboxd_file),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_letterboxd_file),
+                CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"),
             ],
             WAITING_MOVIES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_movies_input),
+                CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"),
             ],
             WAITING_RUTRACKER_USER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rutracker_user_input),
+                CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"),
             ],
             WAITING_RUTRACKER_PASS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rutracker_pass_input),
+                CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"),
             ],
         },
-        fallbacks=[],
+        fallbacks=[
+            CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"),
+        ],
         per_message=False,
         per_chat=True,
         per_user=True,
