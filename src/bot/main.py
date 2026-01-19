@@ -30,6 +30,7 @@ from src.bot.onboarding import (
     settings_callback_handler,
     settings_handler,
 )
+from src.bot.rutracker_auth import get_rutracker_conversation_handler
 from src.config import settings
 from src.logger import get_logger
 
@@ -67,6 +68,9 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("help", help_handler))
     application.add_handler(CommandHandler("settings", settings_handler))
     application.add_handler(CommandHandler("health", health_check))
+
+    # Register Rutracker credentials conversation handler
+    application.add_handler(get_rutracker_conversation_handler())
 
     # Register callback query handlers for inline keyboards
     application.add_handler(CallbackQueryHandler(onboarding_callback_handler, pattern="^onboard_"))

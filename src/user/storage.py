@@ -54,6 +54,8 @@ class CredentialType(str, Enum):
     TRAKT_REFRESH = "trakt_refresh"
     SEEDBOX_PASSWORD = "seedbox_password"
     RUTRACKER_SESSION = "rutracker_session"
+    RUTRACKER_USERNAME = "rutracker_username"
+    RUTRACKER_PASSWORD = "rutracker_password"
     CUSTOM = "custom"
 
 
