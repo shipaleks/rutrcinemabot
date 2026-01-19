@@ -30,6 +30,32 @@ PIRATEBAY_MIRRORS = [
     "https://piratebay.live",
     "https://thepiratebay.zone",
     "https://tpb.party",
+    "https://pirateproxy.live",
+    "https://thehiddenbay.com",
+    "https://pirate-bay.info",
+    "https://thepiratebay.rocks",
+    "https://tpb.tf",
+]
+
+# CSS selector patterns for different site layouts
+# Each pattern is a tuple of (row_selector, pattern_name)
+SELECTOR_PATTERNS = [
+    # Pattern 1: Classic table layout
+    ("table#searchResult tr", "classic_table"),
+    # Pattern 2: Alternative table with tbody
+    ("table#searchResult tbody tr", "classic_table_tbody"),
+    # Pattern 3: Modern list layout
+    ("ol#torrents li", "modern_list"),
+    # Pattern 4: Generic table with list class
+    ("table.list tr", "generic_table"),
+    # Pattern 5: List items container
+    ("li.list-entry", "list_entries"),
+    # Pattern 6: Search result divs
+    ("div.detName", "detname_divs"),
+    # Pattern 7: Generic torrent rows
+    ("tr[class*='torrent']", "torrent_rows"),
+    # Pattern 8: Results container divs
+    ("div.results-container div.result", "results_container"),
 ]
 
 # Default base URL
@@ -377,6 +403,8 @@ class PirateBayClient:
     def _parse_search_results(self, html: str) -> list[PirateBayResult]:
         """Parse search results from HTML.
 
+        Tries multiple CSS selector patterns to handle different site layouts.
+
         Args:
             html: HTML content of search results page.
 
@@ -385,33 +413,52 @@ class PirateBayClient:
         """
         results: list[PirateBayResult] = []
         soup = BeautifulSoup(html, "lxml")
+        rows = []
+        matched_pattern = None
 
-        # PirateBay uses different HTML structures depending on the mirror
-        # Try multiple patterns
+        # Try each selector pattern until we find results
+        for selector, pattern_name in SELECTOR_PATTERNS:
+            rows = soup.select(selector)
 
-        # Pattern 1: Classic table layout
-        rows = soup.select("table#searchResult tr")
-
-        # Pattern 2: Modern list layout
-        if not rows:
-            rows = soup.select("ol#torrents li")
-
-        # Pattern 3: Alternative table
-        if not rows:
-            rows = soup.select("table.list tr")
-
-        # Pattern 4: List items
-        if not rows:
-            rows = soup.select("li.list-entry")
-
-        # Pattern 5: Search result divs (some mirrors)
-        if not rows:
-            rows = soup.select("div.detName")
-            if rows:
-                # Get parent containers
+            # Special handling for detName divs - need to get parent containers
+            if pattern_name == "detname_divs" and rows:
                 rows = [r.parent.parent for r in rows if r.parent and r.parent.parent]
 
-        logger.debug("found_result_rows", count=len(rows))
+            if rows:
+                matched_pattern = pattern_name
+                logger.info(
+                    "selector_pattern_matched",
+                    pattern=pattern_name,
+                    selector=selector,
+                    rows_found=len(rows),
+                )
+                break
+
+        if not rows:
+            # Last resort: try to find any links that look like torrent links
+            torrent_links = soup.select('a[href*="/torrent/"]')
+            if torrent_links:
+                # Get unique parent rows
+                seen_parents = set()
+                for link in torrent_links:
+                    parent = link.parent
+                    while parent and parent.name not in ("tr", "li", "div"):
+                        parent = parent.parent
+                    if parent and id(parent) not in seen_parents:
+                        seen_parents.add(id(parent))
+                        rows.append(parent)
+                if rows:
+                    matched_pattern = "fallback_torrent_links"
+                    logger.info(
+                        "selector_pattern_matched",
+                        pattern="fallback_torrent_links",
+                        rows_found=len(rows),
+                    )
+
+        if not rows:
+            logger.warning("no_results_found_with_any_pattern")
+
+        logger.debug("found_result_rows", count=len(rows), pattern=matched_pattern)
 
         for row in rows[:MAX_RESULTS]:
             try:

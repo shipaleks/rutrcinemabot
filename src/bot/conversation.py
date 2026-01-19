@@ -111,8 +111,17 @@ async def handle_rutracker_search(tool_input: dict[str, Any]) -> str:
 
     logger.info("rutracker_search", query=query, quality=quality)
 
+    # Get credentials from settings if available
+    username = settings.rutracker_username
+    password = (
+        settings.rutracker_password.get_secret_value() if settings.rutracker_password else None
+    )
+
+    if not settings.has_rutracker_credentials:
+        logger.warning("rutracker_credentials_not_configured")
+
     try:
-        async with RutrackerClient() as client:
+        async with RutrackerClient(username=username, password=password) as client:
             results = await client.search(query, quality=quality, category=category)
             results = results[:10]  # Limit results
 
@@ -754,7 +763,7 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
     result = get_cached_result(result_id)
     if not result:
         await query.edit_message_text(
-            "К сожалению, эта раздача больше недоступна. " "Попробуйте выполнить поиск заново."
+            "К сожалению, эта раздача больше недоступна. Попробуйте выполнить поиск заново."
         )
         return
 
@@ -784,13 +793,13 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
         message = query.message
         if len(magnet) > 4000:
             await query.edit_message_text(
-                f"📥 **{title}**\n\n" f"Скопируйте magnet-ссылку ниже:",
+                f"📥 **{title}**\n\nСкопируйте magnet-ссылку ниже:",
                 parse_mode="Markdown",
             )
             if message:
                 await message.reply_text(f"`{magnet}`", parse_mode="Markdown")
         else:
             await query.edit_message_text(
-                f"📥 **{title}**\n\n" f"Скопируйте magnet-ссылку:\n" f"`{magnet}`",
+                f"📥 **{title}**\n\nСкопируйте magnet-ссылку:\n`{magnet}`",
                 parse_mode="Markdown",
             )

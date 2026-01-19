@@ -1,167 +1,84 @@
-# CLAUDE.md - Project Instructions for Claude Code
+# CLAUDE.md
 
-## Project: Media Concierge Bot
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-A Telegram bot for finding and downloading movies/TV shows with AI-powered natural language interface.
+## Project Overview
 
-## Quick Commands
+Media Concierge Bot — Telegram bot for finding and downloading movies/TV shows with AI-powered natural language interface. Uses Claude API for understanding user queries and tool_use for searching torrent trackers.
+
+## Commands
 
 ```bash
 # Install dependencies
 pip install -e ".[dev]"
 
-# Run linter
-ruff check . --fix
-ruff format .
+# Run linter and formatter
+ruff check . --fix && ruff format .
 
-# Run tests
+# Run all tests
 pytest -v
 
-# Run bot locally
+# Run single test file
+pytest tests/test_rutracker.py -v
+
+# Run single test
+pytest tests/test_rutracker.py::TestRutrackerClient::test_search_returns_results -v
+
+# Run tests with coverage
+pytest --cov=src --cov-report=term
+
+# Run bot locally (polling mode)
 python -m src.bot.main
 
 # Build Docker image
 docker build -t media-concierge-bot .
-
-# Check types (optional)
-mypy src/
 ```
+
+## Architecture
+
+```
+User Message → Bot Module → Claude API (with tools) → Tool Executor → Search/Media Modules → Response
+```
+
+**Key modules:**
+
+- `src/bot/` — Telegram handlers, streaming, onboarding
+  - `main.py` — Entry point, webhook/polling modes
+  - `conversation.py` — Natural language processing, tool handlers
+  - `streaming.py` — Progressive message updates with typing indicator
+
+- `src/ai/` — Claude API integration
+  - `claude_client.py` — Async client with streaming and tool_use support
+  - `tools.py` — 7 tool definitions (rutracker_search, tmdb_search, etc.)
+  - `prompts.py` — System prompts with user preferences injection
+
+- `src/search/` — Torrent tracker scrapers (Rutracker, PirateBay)
+- `src/media/` — Metadata APIs (TMDB, Kinopoisk) with caching
+- `src/seedbox/` — Torrent client APIs (Transmission, qBittorrent, Deluge)
+- `src/user/` — SQLite storage with Fernet encryption for credentials
+
+**Tool flow:** Claude receives user message → returns `tool_use` → `ToolExecutor` routes to handler → result sent back to Claude → final response generated.
 
 ## Code Conventions
 
-### Async Everywhere
-All I/O operations must be async:
-```python
-# ✅ Good
-async def fetch_movie(movie_id: int) -> Movie:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"/movie/{movie_id}")
-        return Movie.model_validate(response.json())
-
-# ❌ Bad - blocking I/O
-def fetch_movie(movie_id: int) -> Movie:
-    response = requests.get(f"/movie/{movie_id}")
-    return Movie(**response.json())
-```
-
-### Error Handling
-Never let errors crash the bot:
-```python
-# ✅ Good
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        result = await process_query(update.message.text)
-        await update.message.reply_text(result)
-    except SearchError as e:
-        logger.warning("search_failed", error=str(e))
-        await update.message.reply_text(f"Поиск не удался: {e}")
-    except Exception as e:
-        logger.exception("unexpected_error")
-        await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
-```
-
-### Logging
-Use structlog with context:
-```python
-import structlog
-logger = structlog.get_logger()
-
-# ✅ Good
-logger.info("search_completed", query=query, results_count=len(results), duration_ms=elapsed)
-
-# ❌ Bad
-print(f"Search for {query} returned {len(results)} results")
-```
-
-### Configuration
-All config through environment variables:
-```python
-# src/config.py
-from pydantic_settings import BaseSettings
-
-class Settings(BaseSettings):
-    telegram_bot_token: str
-    anthropic_api_key: str
-    tmdb_api_key: str
-    
-    # Optional with defaults
-    log_level: str = "INFO"
-    cache_ttl: int = 3600
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
-settings = Settings()
-```
-
-## File Naming
-
-- Python files: `snake_case.py`
-- Classes: `PascalCase`
-- Functions/methods: `snake_case`
-- Constants: `UPPER_SNAKE_CASE`
-- Test files: `test_*.py`
+- **Async everywhere** — All I/O operations must be async (httpx, aiosqlite)
+- **Structured logging** — Use `structlog` with context: `logger.info("event_name", key=value)`
+- **Error handling** — Never crash the bot; catch exceptions, log, reply with user-friendly message
+- **Config** — All settings via environment variables through `src/config.py` (pydantic-settings)
+- **Secrets** — Use `SecretStr` type, never log tokens/passwords
 
 ## Git Commits
 
 Format: `type(scope): description`
 
-Types:
-- `feat`: New feature
-- `fix`: Bug fix
-- `refactor`: Code refactoring
-- `test`: Adding tests
-- `docs`: Documentation
-- `chore`: Maintenance
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
-Examples:
-```
-feat(search): add Rutracker parser
-fix(bot): handle empty search results
-test(tmdb): add tests for credits endpoint
-docs: update deployment instructions
-```
+## Required Environment Variables
 
-## Testing
+- `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `TMDB_API_KEY`, `KINOPOISK_API_TOKEN`, `ENCRYPTION_KEY`
+- Optional: `SEEDBOX_HOST`, `SEEDBOX_USER`, `SEEDBOX_PASSWORD`
 
-Use pytest with async support:
-```python
-import pytest
-from unittest.mock import AsyncMock, patch
+## Deployment
 
-@pytest.mark.asyncio
-async def test_search_returns_results():
-    with patch("src.search.rutracker.fetch_page", new_callable=AsyncMock) as mock:
-        mock.return_value = SAMPLE_HTML
-        results = await search("Dune")
-        assert len(results) > 0
-        assert results[0].magnet.startswith("magnet:")
-```
-
-## Secrets Management
-
-NEVER commit secrets. Use:
-1. `.env` file locally (gitignored)
-2. Koyeb secrets in production
-
-Required env vars:
-- `TELEGRAM_BOT_TOKEN` - from @BotFather
-- `ANTHROPIC_API_KEY` - from console.anthropic.com
-- `TMDB_API_KEY` - from themoviedb.org
-- `KINOPOISK_API_TOKEN` - from kinopoiskapiunofficial.tech
-- `ENCRYPTION_KEY` - for encrypting user data (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
-
-Optional env vars (for seedbox integration):
-- `SEEDBOX_HOST` - your seedbox URL
-- `SEEDBOX_USER` - seedbox username
-- `SEEDBOX_PASSWORD` - seedbox password
-
-## Koyeb Deployment
-
-The bot runs as a web service with webhook:
-1. Koyeb calls health endpoint
-2. Telegram sends updates to webhook URL
-3. Bot processes and responds
-
-Webhook URL pattern: `https://<app-name>-<org>.koyeb.app/webhook`
+Koyeb with Docker. Two ports: 8000 (webhook), 8080 (health check).
+Webhook URL: `https://<app-name>.koyeb.app/webhook`

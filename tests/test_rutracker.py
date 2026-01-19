@@ -6,6 +6,7 @@ import pytest
 
 from src.search.rutracker import (
     ContentCategory,
+    RutrackerAuthError,
     RutrackerBlockedError,
     RutrackerCaptchaError,
     RutrackerClient,
@@ -108,6 +109,51 @@ SAMPLE_EMPTY_RESULTS_HTML = """
 <body>
 <table id="tor-tbl"><tbody></tbody></table>
 <div>Ничего не найдено</div>
+</body>
+</html>
+"""
+
+SAMPLE_LOGIN_PAGE_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Login</title></head>
+<body>
+<form action="login.php" method="post">
+<input type="text" name="login_username" />
+<input type="password" name="login_password" />
+<input type="submit" name="login" value="Вход" />
+</form>
+</body>
+</html>
+"""
+
+SAMPLE_LOGIN_SUCCESS_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Index</title></head>
+<body>
+<a href="login.php?logout=1">Выход</a>
+<div>Добро пожаловать!</div>
+</body>
+</html>
+"""
+
+SAMPLE_LOGIN_FAILED_PASSWORD_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Login Error</title></head>
+<body>
+<div class="error">Неверный пароль</div>
+</body>
+</html>
+"""
+
+SAMPLE_LOGIN_FAILED_USER_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Login Error</title></head>
+<body>
+<div class="error">Пользователь не найден</div>
 </body>
 </html>
 """
@@ -533,6 +579,210 @@ class TestSearchWithFallback:
 
 
 # =============================================================================
+# Authentication Tests
+# =============================================================================
+
+
+class TestRutrackerClientCredentials:
+    """Tests for client credentials handling."""
+
+    def test_init_without_credentials(self):
+        """Test initialization without credentials."""
+        client = RutrackerClient()
+        assert client._username is None
+        assert client._password is None
+        assert client.has_credentials is False
+
+    def test_init_with_credentials(self):
+        """Test initialization with credentials."""
+        client = RutrackerClient(username="testuser", password="testpass")
+        assert client._username == "testuser"
+        assert client._password == "testpass"
+        assert client.has_credentials is True
+
+    def test_init_with_partial_credentials(self):
+        """Test that partial credentials don't count as configured."""
+        client = RutrackerClient(username="testuser")
+        assert client.has_credentials is False
+
+        client = RutrackerClient(password="testpass")
+        assert client.has_credentials is False
+
+
+class TestRutrackerClientAuthentication:
+    """Tests for authentication functionality."""
+
+    @pytest.mark.asyncio
+    async def test_login_without_credentials_raises_error(self):
+        """Test that login without credentials raises RutrackerAuthError."""
+        async with RutrackerClient() as client:
+            with pytest.raises(RutrackerAuthError, match="credentials not configured"):
+                await client._login()
+
+    @pytest.mark.asyncio
+    async def test_login_success_with_redirect(self):
+        """Test successful login with redirect response."""
+        with patch("httpx.AsyncClient.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 302
+            mock_response.headers = {"location": "/forum/index.php"}
+            mock_post.return_value = mock_response
+
+            async with RutrackerClient(username="user", password="pass") as client:
+                result = await client._login()
+                # Check inside context manager since __aexit__ resets _authenticated
+                assert result is True
+                assert client._authenticated is True
+
+    @pytest.mark.asyncio
+    async def test_login_success_with_logout_link(self):
+        """Test successful login detected by logout link presence."""
+        with patch("httpx.AsyncClient.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.text = SAMPLE_LOGIN_SUCCESS_HTML
+            mock_response.cookies = {}
+            mock_post.return_value = mock_response
+
+            async with RutrackerClient(username="user", password="pass") as client:
+                result = await client._login()
+                # Check inside context manager since __aexit__ resets _authenticated
+                assert result is True
+                assert client._authenticated is True
+
+    @pytest.mark.asyncio
+    async def test_login_failed_wrong_password(self):
+        """Test login failure with wrong password."""
+        with patch("httpx.AsyncClient.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.text = SAMPLE_LOGIN_FAILED_PASSWORD_HTML
+            mock_response.cookies = {}
+            mock_post.return_value = mock_response
+
+            async with RutrackerClient(username="user", password="wrongpass") as client:
+                with pytest.raises(RutrackerAuthError, match="wrong password"):
+                    await client._login()
+
+    @pytest.mark.asyncio
+    async def test_login_failed_user_not_found(self):
+        """Test login failure with user not found."""
+        with patch("httpx.AsyncClient.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.text = SAMPLE_LOGIN_FAILED_USER_HTML
+            mock_response.cookies = {}
+            mock_post.return_value = mock_response
+
+            async with RutrackerClient(username="baduser", password="pass") as client:
+                with pytest.raises(RutrackerAuthError, match="user not found"):
+                    await client._login()
+
+    @pytest.mark.asyncio
+    async def test_login_captcha_required(self):
+        """Test login failure when captcha is required."""
+        with patch("httpx.AsyncClient.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.text = SAMPLE_CAPTCHA_HTML
+            mock_response.cookies = {}
+            mock_post.return_value = mock_response
+
+            async with RutrackerClient(username="user", password="pass") as client:
+                with pytest.raises(RutrackerCaptchaError, match="Captcha required"):
+                    await client._login()
+
+    @pytest.mark.asyncio
+    async def test_ensure_authenticated_skips_if_already_authenticated(self):
+        """Test that _ensure_authenticated skips login if already authenticated."""
+        async with RutrackerClient(username="user", password="pass") as client:
+            client._authenticated = True
+
+            # Should not call _login
+            with patch.object(client, "_login") as mock_login:
+                await client._ensure_authenticated()
+                mock_login.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ensure_authenticated_skips_without_credentials(self):
+        """Test that _ensure_authenticated does nothing without credentials."""
+        async with RutrackerClient() as client:
+            # Should not raise any error
+            await client._ensure_authenticated()
+            assert client._authenticated is False
+
+
+class TestRutrackerClientLoginRedirect:
+    """Tests for login redirect handling in _fetch_page."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_page_redirect_to_login_with_credentials(self):
+        """Test that redirect to login triggers re-authentication."""
+        call_count = 0
+
+        async def mock_get(url, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            mock_response = MagicMock()
+            if call_count == 1:
+                # First call returns redirect to login
+                mock_response.status_code = 302
+                mock_response.headers = {"location": "/forum/login.php"}
+            else:
+                # After re-auth, return search results
+                mock_response.status_code = 200
+                mock_response.text = SAMPLE_SEARCH_HTML
+                mock_response.raise_for_status = MagicMock()
+            return mock_response
+
+        with (
+            patch("httpx.AsyncClient.get", side_effect=mock_get),
+            patch("httpx.AsyncClient.post") as mock_post,
+        ):
+            # Mock successful login
+            login_response = MagicMock()
+            login_response.status_code = 302
+            login_response.headers = {"location": "/forum/index.php"}
+            mock_post.return_value = login_response
+
+            async with RutrackerClient(username="user", password="pass") as client:
+                html = await client._fetch_page("http://test.com/search")
+
+            assert SAMPLE_SEARCH_HTML in html or "Dune" in html
+
+    @pytest.mark.asyncio
+    async def test_fetch_page_redirect_to_login_without_credentials(self):
+        """Test that redirect to login raises error without credentials."""
+        with patch("httpx.AsyncClient.get") as mock_get:
+            mock_response = MagicMock()
+            mock_response.status_code = 302
+            mock_response.headers = {"location": "/forum/login.php"}
+            mock_get.return_value = mock_response
+
+            async with RutrackerClient() as client:
+                with pytest.raises(RutrackerAuthError, match="Authentication required"):
+                    await client._fetch_page("http://test.com/search")
+
+
+class TestSearchRutrackerWithCredentials:
+    """Tests for search_rutracker with credentials."""
+
+    @pytest.mark.asyncio
+    async def test_search_rutracker_with_credentials(self):
+        """Test search function passes credentials to client."""
+        with patch.object(RutrackerClient, "_fetch_page") as mock_fetch:
+            mock_fetch.return_value = SAMPLE_SEARCH_HTML
+
+            results = await search_rutracker(
+                "Dune 2021",
+                username="testuser",
+                password="testpass",
+            )
+
+            assert len(results) > 0
+
+
+# =============================================================================
 # Enum Tests
 # =============================================================================
 
@@ -578,6 +828,11 @@ class TestExceptions:
     def test_captcha_error_is_rutracker_error(self):
         """Test that RutrackerCaptchaError inherits from RutrackerError."""
         error = RutrackerCaptchaError("Captcha")
+        assert isinstance(error, RutrackerError)
+
+    def test_auth_error_is_rutracker_error(self):
+        """Test that RutrackerAuthError inherits from RutrackerError."""
+        error = RutrackerAuthError("Auth failed")
         assert isinstance(error, RutrackerError)
 
     def test_parse_error_is_rutracker_error(self):

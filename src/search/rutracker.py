@@ -134,6 +134,12 @@ class RutrackerCaptchaError(RutrackerError):
     pass
 
 
+class RutrackerAuthError(RutrackerError):
+    """Raised when authentication fails or credentials are missing."""
+
+    pass
+
+
 class RutrackerParseError(RutrackerError):
     """Raised when response parsing fails."""
 
@@ -302,10 +308,10 @@ class RutrackerClient:
     """Async client for searching Rutracker.
 
     Handles HTTP requests, HTML parsing, and result extraction.
-    Supports quality filtering and handles various error conditions.
+    Supports quality filtering, authentication, and handles various error conditions.
 
     Example:
-        async with RutrackerClient() as client:
+        async with RutrackerClient(username="user", password="pass") as client:
             results = await client.search("Dune 2021", quality="1080p")
             for result in results:
                 print(result.title, result.magnet)
@@ -315,16 +321,28 @@ class RutrackerClient:
         self,
         base_url: str = RUTRACKER_BASE_URL,
         timeout: float = REQUEST_TIMEOUT,
+        username: str | None = None,
+        password: str | None = None,
     ) -> None:
         """Initialize Rutracker client.
 
         Args:
             base_url: Base URL for Rutracker (use mirror if needed).
             timeout: Request timeout in seconds.
+            username: Rutracker username for authentication (optional).
+            password: Rutracker password for authentication (optional).
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._username = username
+        self._password = password
         self._client: httpx.AsyncClient | None = None
+        self._authenticated = False
+
+    @property
+    def has_credentials(self) -> bool:
+        """Check if credentials are configured."""
+        return bool(self._username and self._password)
 
     async def __aenter__(self) -> "RutrackerClient":
         """Enter async context manager."""
@@ -335,7 +353,7 @@ class RutrackerClient:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
             },
-            follow_redirects=True,
+            follow_redirects=False,  # Handle redirects manually to detect login redirects
         )
         return self
 
@@ -344,6 +362,7 @@ class RutrackerClient:
         if self._client:
             await self._client.aclose()
             self._client = None
+        self._authenticated = False
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -359,12 +378,125 @@ class RutrackerClient:
             raise RuntimeError("Client not initialized. Use 'async with' context manager.")
         return self._client
 
-    async def _fetch_page(self, url: str, params: dict | None = None) -> str:
+    async def _login(self) -> bool:
+        """Perform login to Rutracker.
+
+        Returns:
+            True if login was successful, False otherwise.
+
+        Raises:
+            RutrackerAuthError: If credentials are missing or login fails.
+            RutrackerCaptchaError: If captcha is required during login.
+        """
+        if not self.has_credentials:
+            raise RutrackerAuthError(
+                "Rutracker credentials not configured. "
+                "Set RUTRACKER_USERNAME and RUTRACKER_PASSWORD environment variables."
+            )
+
+        logger.info("logging_into_rutracker")
+
+        login_url = f"{self.base_url}/forum/login.php"
+        login_data = {
+            "login_username": self._username,
+            "login_password": self._password,
+            "login": "Вход",  # Submit button text
+        }
+
+        try:
+            response = await self.client.post(
+                login_url,
+                data=login_data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": f"{self.base_url}/forum/index.php",
+                },
+            )
+
+            # Check response for login success indicators
+            # Successful login typically redirects to index.php or profile
+            if response.status_code in (301, 302, 303):
+                location = response.headers.get("location", "")
+                # If redirected to login.php again, login failed
+                if "login.php" in location:
+                    logger.warning("login_failed_redirect_to_login", location=location)
+                    raise RutrackerAuthError("Login failed: invalid credentials")
+                # Successful login redirects elsewhere
+                self._authenticated = True
+                logger.info("login_successful")
+                return True
+
+            # Check response body for error messages
+            html = response.text
+
+            if "captcha" in html.lower() or "капча" in html.lower():
+                logger.warning("captcha_required_during_login")
+                raise RutrackerCaptchaError(
+                    "Captcha required during login. Try again later or use a different IP."
+                )
+
+            if "неверный пароль" in html.lower() or "wrong password" in html.lower():
+                logger.warning("login_failed_wrong_password")
+                raise RutrackerAuthError("Login failed: wrong password")
+
+            if "пользователь не найден" in html.lower() or "user not found" in html.lower():
+                logger.warning("login_failed_user_not_found")
+                raise RutrackerAuthError("Login failed: user not found")
+
+            # Check for bb_session cookie as success indicator
+            cookies = response.cookies
+            if "bb_session" in cookies or any("bb_" in name for name in cookies):
+                self._authenticated = True
+                logger.info("login_successful_cookie_found")
+                return True
+
+            # If we got 200 and no error messages, might be successful
+            # Check if we're on the main page (logged in state)
+            if response.status_code == 200 and (
+                "выход" in html.lower() or "logout" in html.lower()
+            ):
+                self._authenticated = True
+                logger.info("login_successful_logout_link_found")
+                return True
+
+            logger.warning(
+                "login_failed_unknown",
+                status_code=response.status_code,
+                has_cookies=bool(cookies),
+            )
+            raise RutrackerAuthError("Login failed: unknown error")
+
+        except httpx.HTTPError as e:
+            logger.error("login_http_error", error=str(e))
+            raise RutrackerAuthError(f"Login failed due to HTTP error: {e}") from e
+
+    async def _ensure_authenticated(self) -> None:
+        """Ensure the client is authenticated before making requests.
+
+        Raises:
+            RutrackerAuthError: If authentication fails or credentials are missing.
+        """
+        if self._authenticated:
+            return
+
+        if not self.has_credentials:
+            logger.debug("no_credentials_skipping_auth")
+            return
+
+        await self._login()
+
+    async def _fetch_page(
+        self,
+        url: str,
+        params: dict | None = None,
+        retry_auth: bool = True,
+    ) -> str:
         """Fetch a page from Rutracker.
 
         Args:
             url: URL to fetch.
             params: Optional query parameters.
+            retry_auth: Whether to retry with authentication if redirected to login.
 
         Returns:
             HTML content of the page.
@@ -372,12 +504,44 @@ class RutrackerClient:
         Raises:
             RutrackerBlockedError: If the site is blocked or unavailable.
             RutrackerCaptchaError: If captcha is required.
+            RutrackerAuthError: If authentication is required but fails.
             RutrackerError: For other errors.
         """
         logger.debug("fetching_page", url=url, params=params)
 
+        # Ensure we're authenticated before fetching
+        await self._ensure_authenticated()
+
         try:
             response = await self.client.get(url, params=params)
+
+            # Handle redirects manually to detect login page redirects
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                logger.debug("redirect_detected", location=location)
+
+                # Check if redirected to login page
+                if "login.php" in location:
+                    logger.warning("redirect_to_login", url=url)
+
+                    if retry_auth and self.has_credentials:
+                        # Session expired, try to re-authenticate
+                        self._authenticated = False
+                        await self._login()
+                        # Retry the original request
+                        return await self._fetch_page(url, params, retry_auth=False)
+
+                    raise RutrackerAuthError(
+                        "Authentication required. Rutracker redirected to login page. "
+                        "Please configure RUTRACKER_USERNAME and RUTRACKER_PASSWORD."
+                    )
+
+                # Follow other redirects
+                redirect_url = location
+                if not redirect_url.startswith("http"):
+                    redirect_url = f"{self.base_url}{location}"
+                response = await self.client.get(redirect_url)
+
             response.raise_for_status()
             html = response.text
 
@@ -393,6 +557,18 @@ class RutrackerClient:
                 raise RutrackerBlockedError(
                     "Rutracker is blocked in your region. Try using a VPN or proxy."
                 )
+
+            # Check if we're on login page (session might have expired)
+            is_login_page = (
+                "login.php" in url
+                or 'name="login_username"' in html
+                or "форма входа" in html.lower()
+            )
+            if is_login_page and retry_auth and self.has_credentials:
+                logger.warning("login_page_detected", url=url)
+                self._authenticated = False
+                await self._login()
+                return await self._fetch_page(url, params, retry_auth=False)
 
             return html
 
@@ -668,6 +844,8 @@ async def search_rutracker(
     query: str,
     quality: str | None = None,
     category: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
 ) -> list[SearchResult]:
     """Search Rutracker for movies/TV shows.
 
@@ -677,6 +855,8 @@ async def search_rutracker(
         query: Search query (movie/TV show name).
         quality: Optional quality filter (720p, 1080p, 4K, etc.).
         category: Optional category filter (movie, tv_show, anime, documentary).
+        username: Rutracker username for authentication (optional).
+        password: Rutracker password for authentication (optional).
 
     Returns:
         List of SearchResult objects.
@@ -687,7 +867,7 @@ async def search_rutracker(
             print(f"{r.title} | {r.size} | Seeds: {r.seeds}")
             print(f"Magnet: {r.magnet}")
     """
-    async with RutrackerClient() as client:
+    async with RutrackerClient(username=username, password=password) as client:
         return await client.search(query, quality=quality, category=category)
 
 
@@ -695,6 +875,8 @@ async def search_with_fallback(
     query: str,
     quality: str | None = None,
     category: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
 ) -> list[SearchResult]:
     """Search Rutracker with automatic mirror fallback.
 
@@ -704,6 +886,8 @@ async def search_with_fallback(
         query: Search query.
         quality: Optional quality filter.
         category: Optional category filter.
+        username: Rutracker username for authentication (optional).
+        password: Rutracker password for authentication (optional).
 
     Returns:
         List of SearchResult objects.
@@ -716,7 +900,9 @@ async def search_with_fallback(
     for mirror in RUTRACKER_MIRRORS:
         try:
             logger.info("trying_mirror", mirror=mirror)
-            async with RutrackerClient(base_url=mirror) as client:
+            async with RutrackerClient(
+                base_url=mirror, username=username, password=password
+            ) as client:
                 return await client.search(query, quality=quality, category=category)
         except RutrackerBlockedError as e:
             logger.warning("mirror_blocked", mirror=mirror, error=str(e))
