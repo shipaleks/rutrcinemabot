@@ -23,7 +23,11 @@ logger = structlog.get_logger(__name__)
 # Constants
 # =============================================================================
 
+# PirateBay API endpoint (recommended - site requires JavaScript for HTML)
+PIRATEBAY_API_URL = "https://apibay.org"
+
 # PirateBay mirrors (frequently change, ordered by reliability)
+# Note: Most mirrors now require JavaScript to render results
 PIRATEBAY_MIRRORS = [
     "https://thepiratebay.org",
     "https://thepiratebay10.org",
@@ -400,6 +404,134 @@ class PirateBayClient:
                 ) from e
             raise PirateBayError(f"HTTP error {e.response.status_code}") from e
 
+    async def _search_api(self, query: str, category: str | None = None) -> list[PirateBayResult]:
+        """Search using the apibay.org API.
+
+        The API is more reliable than scraping HTML since the main site
+        requires JavaScript to render results.
+
+        Args:
+            query: Search query.
+            category: Optional category filter (not used by API, filtered after).
+
+        Returns:
+            List of PirateBayResult objects.
+
+        Raises:
+            PirateBayUnavailableError: If API is unavailable.
+            PirateBayError: For other errors.
+        """
+        api_url = f"{PIRATEBAY_API_URL}/q.php"
+        params = {"q": query}
+
+        logger.info("searching_piratebay_api", query=query, api_url=api_url)
+
+        try:
+            response = await self.client.get(api_url, params=params)
+            response.raise_for_status()
+
+            data = response.json()
+
+            # API returns a list of results
+            # If no results, returns: [{"id":"0","name":"No results returned",...}]
+            if not data or (len(data) == 1 and data[0].get("id") == "0"):
+                logger.info("api_no_results", query=query)
+                return []
+
+            results: list[PirateBayResult] = []
+
+            for item in data[:MAX_RESULTS]:
+                try:
+                    # Extract fields from API response
+                    info_hash = item.get("info_hash", "")
+                    name = item.get("name", "")
+                    size_bytes = int(item.get("size", 0))
+                    seeds = int(item.get("seeders", 0))
+                    leeches = int(item.get("leechers", 0))
+                    username = item.get("username", "")
+                    added = item.get("added", "")
+                    category_id = item.get("category", "")
+
+                    if not name or not info_hash or len(info_hash) != 40:
+                        continue
+
+                    # Build magnet link from info hash
+                    magnet = build_magnet_link(info_hash, name)
+
+                    # Format size
+                    size = self._format_size(size_bytes)
+
+                    # Detect quality from title
+                    quality = detect_quality(name)
+
+                    # Format upload date
+                    uploaded = None
+                    if added and added != "0":
+                        with contextlib.suppress(Exception):
+                            from datetime import datetime
+
+                            dt = datetime.fromtimestamp(int(added))
+                            uploaded = dt.strftime("%Y-%m-%d")
+
+                    result = PirateBayResult(
+                        title=name,
+                        size=size,
+                        size_bytes=size_bytes,
+                        seeds=seeds,
+                        leeches=leeches,
+                        magnet=magnet,
+                        quality=quality,
+                        category=category_id,
+                        uploader=username if username else None,
+                        uploaded=uploaded,
+                    )
+                    results.append(result)
+
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.warning("failed_to_parse_api_result", error=str(e), item=item)
+                    continue
+
+            logger.info("api_results_found", count=len(results))
+            return results
+
+        except httpx.ConnectError as e:
+            logger.error("api_connection_error", error=str(e))
+            raise PirateBayUnavailableError(f"Cannot connect to PirateBay API: {e}") from e
+        except httpx.TimeoutException as e:
+            logger.error("api_timeout_error", error=str(e))
+            raise PirateBayUnavailableError(f"API request timed out: {e}") from e
+        except httpx.HTTPStatusError as e:
+            logger.error("api_http_error", status=e.response.status_code)
+            raise PirateBayUnavailableError(
+                f"PirateBay API returned error {e.response.status_code}"
+            ) from e
+        except Exception as e:
+            logger.error("api_error", error=str(e))
+            raise PirateBayError(f"API error: {e}") from e
+
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        """Format size in bytes to human-readable string.
+
+        Args:
+            size_bytes: Size in bytes.
+
+        Returns:
+            Human-readable size string.
+        """
+        if size_bytes <= 0:
+            return "N/A"
+
+        units = ["B", "KB", "MB", "GB", "TB"]
+        unit_index = 0
+        size = float(size_bytes)
+
+        while size >= 1024 and unit_index < len(units) - 1:
+            size /= 1024
+            unit_index += 1
+
+        return f"{size:.2f} {units[unit_index]}"
+
     def _parse_search_results(self, html: str) -> list[PirateBayResult]:
         """Parse search results from HTML.
 
@@ -634,6 +766,9 @@ class PirateBayClient:
     ) -> list[PirateBayResult]:
         """Search for torrents on PirateBay.
 
+        Uses the apibay.org API first (more reliable), then falls back to
+        HTML scraping if the API is unavailable.
+
         Args:
             query: Search query (movie/TV show name).
             category: Optional category filter ("video", "movies", "tv").
@@ -653,32 +788,39 @@ class PirateBayClient:
             min_seeds=min_seeds,
         )
 
-        # Determine category ID
-        cat_id = 0  # All categories by default
-        if category:
-            cat_lower = category.lower()
-            if cat_lower in ("video", "all_video"):
-                cat_id = CATEGORY_VIDEO
-            elif cat_lower in ("movies", "movie", "film"):
-                cat_id = CATEGORY_VIDEO_MOVIES
-            elif cat_lower in ("tv", "tv_show", "series"):
-                cat_id = CATEGORY_VIDEO_TV
-            elif cat_lower in ("hd_movies", "hd_movie"):
-                cat_id = CATEGORY_VIDEO_HD_MOVIES
-            elif cat_lower in ("hd_tv", "hd_series"):
-                cat_id = CATEGORY_VIDEO_HD_TV
+        results: list[PirateBayResult] = []
 
-        # Build search URL
-        # PirateBay search URL format: /search/{query}/{page}/{sort}/{category}
-        # Sort: 7 = seeds descending, 3 = date descending
-        encoded_query = quote_plus(query)
-        search_url = f"{self.base_url}/search/{encoded_query}/0/7/{cat_id}"
+        # Try API first (recommended - HTML scraping doesn't work due to JavaScript)
+        try:
+            results = await self._search_api(query, category)
+            logger.info("search_via_api_success", count=len(results))
+        except (PirateBayUnavailableError, PirateBayError) as e:
+            logger.warning("api_search_failed_trying_html", error=str(e))
 
-        # Fetch search results page
-        html = await self._fetch_page(search_url)
+            # Fall back to HTML scraping (likely won't work but try anyway)
+            # Determine category ID
+            cat_id = 0  # All categories by default
+            if category:
+                cat_lower = category.lower()
+                if cat_lower in ("video", "all_video"):
+                    cat_id = CATEGORY_VIDEO
+                elif cat_lower in ("movies", "movie", "film"):
+                    cat_id = CATEGORY_VIDEO_MOVIES
+                elif cat_lower in ("tv", "tv_show", "series"):
+                    cat_id = CATEGORY_VIDEO_TV
+                elif cat_lower in ("hd_movies", "hd_movie"):
+                    cat_id = CATEGORY_VIDEO_HD_MOVIES
+                elif cat_lower in ("hd_tv", "hd_series"):
+                    cat_id = CATEGORY_VIDEO_HD_TV
 
-        # Parse results
-        results = self._parse_search_results(html)
+            # Build search URL
+            encoded_query = quote_plus(query)
+            search_url = f"{self.base_url}/search/{encoded_query}/0/7/{cat_id}"
+
+            # Fetch and parse HTML
+            html = await self._fetch_page(search_url)
+            results = self._parse_search_results(html)
+
         logger.info("search_results_found", count=len(results))
 
         # Apply minimum seeds filter
@@ -686,7 +828,7 @@ class PirateBayClient:
             results = [r for r in results if r.seeds >= min_seeds]
             logger.info("results_after_seeds_filter", count=len(results))
 
-        # Sort by seeds (descending) - already sorted by URL parameter but ensure
+        # Sort by seeds (descending)
         results.sort(key=lambda r: r.seeds, reverse=True)
 
         return results
