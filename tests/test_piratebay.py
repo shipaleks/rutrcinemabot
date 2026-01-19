@@ -379,11 +379,23 @@ class TestPirateBayClient:
 
 
 class TestErrorHandling:
-    """Tests for error handling."""
+    """Tests for error handling.
+
+    Note: Since the client now uses API first, we need to mock _search_api
+    to fail first, then _fetch_page also fails with the specific error.
+    """
 
     @pytest.mark.asyncio
     async def test_cloudflare_protection(self):
-        with patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch:
+        with (
+            patch.object(
+                PirateBayClient,
+                "_search_api",
+                new_callable=AsyncMock,
+                side_effect=PirateBayUnavailableError("API unavailable"),
+            ),
+            patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch,
+        ):
             mock_fetch.side_effect = PirateBayUnavailableError("Cloudflare protection")
 
             async with PirateBayClient() as client:
@@ -392,12 +404,40 @@ class TestErrorHandling:
 
     @pytest.mark.asyncio
     async def test_connection_error(self):
-        with patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch:
+        with (
+            patch.object(
+                PirateBayClient,
+                "_search_api",
+                new_callable=AsyncMock,
+                side_effect=PirateBayUnavailableError("API unavailable"),
+            ),
+            patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch,
+        ):
             mock_fetch.side_effect = PirateBayUnavailableError("Cannot connect")
 
             async with PirateBayClient() as client:
                 with pytest.raises(PirateBayUnavailableError):
                     await client.search("test")
+
+    @pytest.mark.asyncio
+    async def test_api_error_returns_fallback(self):
+        """Test that API errors fall back to HTML scraping."""
+        with (
+            patch.object(
+                PirateBayClient,
+                "_search_api",
+                new_callable=AsyncMock,
+                side_effect=PirateBayUnavailableError("API unavailable"),
+            ),
+            patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch,
+        ):
+            mock_fetch.return_value = SAMPLE_SEARCH_HTML
+
+            async with PirateBayClient() as client:
+                results = await client.search("test")
+
+            # Should have fallen back to HTML and got results
+            assert len(results) > 0
 
 
 # =============================================================================
@@ -463,11 +503,23 @@ class TestConvenienceFunctions:
 
 
 class TestCategoryFiltering:
-    """Tests for category filtering."""
+    """Tests for category filtering.
+
+    Note: Since the client now uses API first (which doesn't support categories),
+    we mock _search_api to fail so it falls back to HTML scraping with categories.
+    """
 
     @pytest.mark.asyncio
     async def test_video_category(self):
-        with patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch:
+        with (
+            patch.object(
+                PirateBayClient,
+                "_search_api",
+                new_callable=AsyncMock,
+                side_effect=PirateBayUnavailableError("API unavailable"),
+            ),
+            patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch,
+        ):
             mock_fetch.return_value = SAMPLE_SEARCH_HTML
 
             async with PirateBayClient() as client:
@@ -479,7 +531,15 @@ class TestCategoryFiltering:
 
     @pytest.mark.asyncio
     async def test_movies_category(self):
-        with patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch:
+        with (
+            patch.object(
+                PirateBayClient,
+                "_search_api",
+                new_callable=AsyncMock,
+                side_effect=PirateBayUnavailableError("API unavailable"),
+            ),
+            patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch,
+        ):
             mock_fetch.return_value = SAMPLE_SEARCH_HTML
 
             async with PirateBayClient() as client:
@@ -491,7 +551,15 @@ class TestCategoryFiltering:
 
     @pytest.mark.asyncio
     async def test_tv_category(self):
-        with patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch:
+        with (
+            patch.object(
+                PirateBayClient,
+                "_search_api",
+                new_callable=AsyncMock,
+                side_effect=PirateBayUnavailableError("API unavailable"),
+            ),
+            patch.object(PirateBayClient, "_fetch_page", new_callable=AsyncMock) as mock_fetch,
+        ):
             mock_fetch.return_value = SAMPLE_SEARCH_HTML
 
             async with PirateBayClient() as client:
