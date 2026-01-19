@@ -2,8 +2,8 @@
 
 This module provides:
 - Welcome with feature explanation
-- Letterboxd import (optional, first step)
-- Favorite movies question (instead of genres)
+- Letterboxd export import (optional, upload ZIP file)
+- Favorite movies question (if no Letterboxd data)
 - Rutracker credentials setup
 - Quality/audio preferences
 
@@ -23,7 +23,7 @@ from src.user.storage import get_storage
 logger = structlog.get_logger(__name__)
 
 # Conversation states
-WAITING_LETTERBOXD = 1
+WAITING_LETTERBOXD_FILE = 1
 WAITING_MOVIES = 2
 WAITING_RUTRACKER_USER = 3
 WAITING_RUTRACKER_PASS = 4
@@ -41,7 +41,7 @@ WELCOME_MESSAGE = """Привет, {name}.
 - Искать и скачивать фильмы с торрент-трекеров
 - Показывать информацию, рейтинги, рекомендации
 - Отслеживать твой watchlist и историю просмотров
-- Синхронизироваться с Letterboxd
+- Импортировать данные из Letterboxd
 - Уведомлять, когда появляется нужный релиз
 
 **Как пользоваться:**
@@ -54,13 +54,22 @@ WELCOME_MESSAGE = """Привет, {name}.
 
 LETTERBOXD_QUESTION = """**Letterboxd**
 
-Если у тебя есть аккаунт на Letterboxd, я могу импортировать твой watchlist и историю просмотров.
+Если у тебя есть аккаунт Letterboxd, я могу импортировать историю просмотров и оценки.
 
-Напиши свой username (как в URL letterboxd.com/USERNAME) или нажми "Пропустить"."""
+**Как экспортировать:**
+1. Зайди на letterboxd.com/settings/data/
+2. Нажми "Export Your Data"
+3. Скачай ZIP-файл и отправь его сюда
+
+Это позволит мне сразу понять твои вкусы: любимые фильмы, что не понравилось, стиль твоих рецензий.
+
+Нажми "Пропустить", если нет аккаунта."""
+
+LETTERBOXD_PROCESSING = """Обрабатываю экспорт Letterboxd..."""
 
 MOVIES_QUESTION = """**Любимые фильмы**
 
-Назови 2-3 фильма, которые тебе нравятся. Это поможет мне понять твои предпочтения лучше, чем список жанров.
+Назови 2-3 фильма, которые тебе нравятся. Это поможет мне понять твои предпочтения.
 
 Просто напиши названия через запятую."""
 
@@ -167,12 +176,12 @@ def get_settings_keyboard(
 # =============================================================================
 
 
-async def onboarding_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def onboarding_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /start command."""
     user = update.effective_user
     message = update.message
     if not user or not message:
-        return
+        return ConversationHandler.END
 
     logger.info("onboarding_start", user_id=user.id, username=user.username)
 
@@ -202,9 +211,12 @@ async def onboarding_start_handler(update: Update, context: ContextTypes.DEFAULT
         parse_mode="Markdown",
         reply_markup=get_welcome_keyboard(),
     )
+    return ConversationHandler.END
 
 
-async def onboarding_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+async def onboarding_callback_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int | None:
     """Handle onboarding callbacks."""
     query = update.callback_query
     if not query or not query.data:
@@ -254,7 +266,7 @@ async def _start_setup(query, context: ContextTypes.DEFAULT_TYPE) -> int:
         parse_mode="Markdown",
         reply_markup=get_skip_keyboard(),
     )
-    return WAITING_LETTERBOXD
+    return WAITING_LETTERBOXD_FILE
 
 
 async def _skip_all(query, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -268,7 +280,7 @@ async def _skip_current_step(query, context: ContextTypes.DEFAULT_TYPE) -> int |
     step = context.user_data.get("setup_step") if context.user_data else None
 
     if step == "letterboxd":
-        # Move to movies question
+        # No Letterboxd data, ask for favorite movies
         if context.user_data is not None:
             context.user_data["setup_step"] = "movies"
         await query.edit_message_text(
@@ -321,7 +333,7 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
     user = query.from_user
 
     quality = context.user_data.get("quality", "1080p") if context.user_data else "1080p"
-    letterboxd = context.user_data.get("letterboxd_username") if context.user_data else None
+    letterboxd_stats = context.user_data.get("letterboxd_stats") if context.user_data else None
     movies = context.user_data.get("favorite_movies") if context.user_data else None
     has_rutracker = context.user_data.get("has_rutracker", False) if context.user_data else False
 
@@ -343,8 +355,8 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
     audio_display = {"ru": "Русский", "en": "English", "original": "Оригинал"}.get(audio, audio)
 
     letterboxd_note = ""
-    if letterboxd:
-        letterboxd_note = f"\nLetterboxd: @{letterboxd} (данные импортированы)"
+    if letterboxd_stats:
+        letterboxd_note = f"\nLetterboxd: {letterboxd_stats}"
 
     movies_note = ""
     if movies:
@@ -367,75 +379,170 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
 
 
 # =============================================================================
-# Text Input Handlers
+# File Upload Handler (Letterboxd Export)
 # =============================================================================
 
 
-async def handle_letterboxd_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle Letterboxd username input."""
+async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle Letterboxd export ZIP file upload."""
     user = update.effective_user
     message = update.message
-    if not message or not message.text:
-        return WAITING_LETTERBOXD
+    if not message or not message.document:
+        return WAITING_LETTERBOXD_FILE
 
-    username = message.text.strip().lower()
+    document = message.document
+    logger.info(
+        "letterboxd_file_received",
+        user_id=user.id if user else None,
+        file_name=document.file_name,
+        file_size=document.file_size,
+    )
 
-    # Remove URL if pasted
-    if "letterboxd.com/" in username:
-        username = username.split("letterboxd.com/")[-1].split("/")[0]
-
-    logger.info("letterboxd_input", user_id=user.id if user else None, username=username)
-
-    # Try to import from Letterboxd
-    try:
-        from src.services.letterboxd_rss import LetterboxdRSS, sync_letterboxd_to_storage
-
-        async with LetterboxdRSS(username) as client:
-            if await client.check_user_exists():
-                # Import data
-                async with get_storage() as storage:
-                    db_user = await storage.get_user_by_telegram_id(user.id)
-                    if db_user:
-                        results = await sync_letterboxd_to_storage(
-                            username=username,
-                            storage=storage,
-                            user_id=db_user.id,
-                            sync_watchlist=True,
-                            sync_diary=True,
-                            diary_limit=50,
-                        )
-
-                        if context.user_data is not None:
-                            context.user_data["letterboxd_username"] = username
-
-                        await message.reply_text(
-                            f"Импортировано из Letterboxd:\n"
-                            f"- Watchlist: {results['watchlist_imported']} фильмов\n"
-                            f"- История: {results['diary_imported']} просмотров\n\n"
-                            f"Теперь назови 2-3 любимых фильма (через запятую):",
-                            reply_markup=get_skip_keyboard(),
-                        )
-
-                        if context.user_data is not None:
-                            context.user_data["setup_step"] = "movies"
-                        return WAITING_MOVIES
-            else:
-                await message.reply_text(
-                    f"Пользователь '{username}' не найден на Letterboxd.\n"
-                    f"Проверь username или нажми 'Пропустить'.",
-                    reply_markup=get_skip_keyboard(),
-                )
-                return WAITING_LETTERBOXD
-
-    except Exception as e:
-        logger.exception("letterboxd_import_error", username=username, error=str(e))
+    # Validate file
+    if not document.file_name or not document.file_name.endswith(".zip"):
         await message.reply_text(
-            f"Ошибка при импорте: {e}\nПопробуй ещё раз или нажми 'Пропустить'.",
+            "Нужен ZIP-файл с экспортом Letterboxd.\n"
+            "Скачай его на letterboxd.com/settings/data/",
             reply_markup=get_skip_keyboard(),
         )
-        return WAITING_LETTERBOXD
+        return WAITING_LETTERBOXD_FILE
 
-    return WAITING_LETTERBOXD
+    # Size limit (5MB should be plenty)
+    if document.file_size and document.file_size > 5 * 1024 * 1024:
+        await message.reply_text(
+            "Файл слишком большой. Максимум 5MB.",
+            reply_markup=get_skip_keyboard(),
+        )
+        return WAITING_LETTERBOXD_FILE
+
+    # Download and process
+    processing_msg = await message.reply_text(LETTERBOXD_PROCESSING)
+
+    try:
+        # Download file
+        file = await document.get_file()
+        file_bytes = await file.download_as_bytearray()
+
+        # Parse export
+        from src.services.letterboxd_export import (
+            LetterboxdExportParser,
+            extract_review_style,
+            format_analysis_for_profile,
+        )
+
+        parser = LetterboxdExportParser()
+        analysis = parser.parse_zip(bytes(file_bytes))
+
+        # Save to profile
+        async with get_storage() as storage:
+            db_user = await storage.get_user_by_telegram_id(user.id)
+            if db_user:
+                from src.user.profile import ProfileManager
+
+                profile_manager = ProfileManager(storage)
+
+                # Format analysis for profile
+                profile_section = format_analysis_for_profile(analysis)
+
+                # Add review style if available
+                review_style = extract_review_style(analysis.review_samples)
+                if review_style:
+                    profile_section += f"\n**Review Style:** {review_style}"
+
+                await profile_manager.update_section(
+                    db_user.id,
+                    "Letterboxd Import",
+                    profile_section,
+                )
+
+                # Also save favorites to separate section
+                if analysis.favorites:
+                    favorites_text = ", ".join(
+                        f"{f.name} ({f.year})" if f.year else f.name
+                        for f in analysis.favorites[:15]
+                    )
+                    await profile_manager.update_section(
+                        db_user.id,
+                        "Favorite Films",
+                        favorites_text,
+                    )
+
+                # Save disliked to blocklist section
+                if analysis.hated or analysis.disliked:
+                    disliked_all = analysis.hated + analysis.disliked[:10]
+                    disliked_text = ", ".join(
+                        f"{f.name} ({f.year})" if f.year else f.name
+                        for f in disliked_all[:15]
+                    )
+                    await profile_manager.update_section(
+                        db_user.id,
+                        "Disliked Films",
+                        disliked_text,
+                    )
+
+        # Store stats for completion message
+        if context.user_data is not None:
+            context.user_data["letterboxd_stats"] = (
+                f"{analysis.total_watched} watched, {analysis.total_rated} rated"
+            )
+            context.user_data["setup_step"] = "rutracker"
+            context.user_data["has_letterboxd"] = True
+
+        # Build result message
+        result_lines = [
+            "**Импортировано из Letterboxd:**",
+            f"- Просмотрено: {analysis.total_watched}",
+            f"- С оценкой: {analysis.total_rated}",
+            f"- Рецензий: {analysis.total_reviews}",
+        ]
+
+        if analysis.favorites:
+            top3 = ", ".join(f.name for f in analysis.favorites[:3])
+            result_lines.append(f"\n**Любимые:** {top3}")
+
+        if analysis.hated:
+            bottom3 = ", ".join(f.name for f in analysis.hated[:3])
+            result_lines.append(f"**Не понравились:** {bottom3}")
+
+        if analysis.average_rating:
+            result_lines.append(f"\n**Средняя оценка:** {analysis.average_rating:.1f}/5")
+
+        result_lines.append("\nТвои предпочтения сохранены в профиле.")
+
+        await processing_msg.edit_text(
+            "\n".join(result_lines),
+            parse_mode="Markdown",
+        )
+
+        # Move to Rutracker (skip movies question since we have Letterboxd data)
+        await message.reply_text(
+            RUTRACKER_QUESTION,
+            parse_mode="Markdown",
+            reply_markup=get_skip_keyboard(),
+        )
+        return WAITING_RUTRACKER_USER
+
+    except ValueError as e:
+        logger.warning("letterboxd_parse_error", error=str(e))
+        await processing_msg.edit_text(
+            f"Ошибка обработки файла: {e}\n"
+            "Убедись, что это ZIP-файл с экспортом Letterboxd.",
+            reply_markup=get_skip_keyboard(),
+        )
+        return WAITING_LETTERBOXD_FILE
+
+    except Exception as e:
+        logger.exception("letterboxd_import_error", error=str(e))
+        await processing_msg.edit_text(
+            f"Ошибка импорта: {e}\nПопробуй ещё раз или нажми 'Пропустить'.",
+            reply_markup=get_skip_keyboard(),
+        )
+        return WAITING_LETTERBOXD_FILE
+
+
+# =============================================================================
+# Text Input Handlers
+# =============================================================================
 
 
 async def handle_movies_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -663,7 +770,9 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
 
         elif callback.startswith("set_audio_"):
             audio = callback.replace("set_audio_", "")
-            audio_display = {"ru": "Русский", "en": "English", "original": "Оригинал"}.get(audio, audio)
+            audio_display = {"ru": "Русский", "en": "English", "original": "Оригинал"}.get(
+                audio, audio
+            )
             async with get_storage() as storage:
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
@@ -694,7 +803,8 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
         elif callback == "settings_letterboxd":
             await query.edit_message_text(
                 "**Letterboxd**\n\n"
-                "Напиши свой Letterboxd username в чат, чтобы импортировать данные.\n\n"
+                "Отправь ZIP-файл с экспортом Letterboxd для импорта данных.\n"
+                "Скачать: letterboxd.com/settings/data/\n\n"
                 "Или нажми 'Назад'.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
@@ -720,13 +830,14 @@ def get_onboarding_conversation_handler() -> ConversationHandler:
     """Create conversation handler for onboarding flow.
 
     Returns:
-        ConversationHandler for text inputs during onboarding
+        ConversationHandler for onboarding
     """
     return ConversationHandler(
-        entry_points=[],  # Entry is through callback handler
+        entry_points=[],
         states={
-            WAITING_LETTERBOXD: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_letterboxd_input),
+            WAITING_LETTERBOXD_FILE: [
+                MessageHandler(filters.Document.ZIP, handle_letterboxd_file),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_letterboxd_file),
             ],
             WAITING_MOVIES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_movies_input),
