@@ -107,14 +107,15 @@ class LetterboxdRSS:
             raise RuntimeError("Client not initialized. Use 'async with' context.")
         return self._client
 
-    async def _fetch_rss(self, url: str) -> str:
+    async def _fetch_rss(self, url: str, allow_empty: bool = False) -> str | None:
         """Fetch RSS feed content.
 
         Args:
             url: RSS feed URL
+            allow_empty: If True, return None on 404 instead of raising error
 
         Returns:
-            RSS XML content
+            RSS XML content or None if allow_empty and 404
 
         Raises:
             LetterboxdRSSError: If fetch fails
@@ -123,6 +124,9 @@ class LetterboxdRSS:
             response = await self.client.get(url)
 
             if response.status_code == 404:
+                if allow_empty:
+                    logger.info("letterboxd_rss_empty", url=url)
+                    return None
                 raise LetterboxdRSSError(f"User '{self.username}' not found on Letterboxd")
 
             response.raise_for_status()
@@ -198,13 +202,18 @@ class LetterboxdRSS:
             limit: Maximum items to return
 
         Returns:
-            List of watchlist items
+            List of watchlist items (empty if watchlist is empty/private)
         """
         url = RSS_WATCHLIST.format(base=LETTERBOXD_BASE, username=self.username)
         logger.info("fetching_letterboxd_watchlist", username=self.username)
 
-        xml_content = await self._fetch_rss(url)
+        xml_content = await self._fetch_rss(url, allow_empty=True)
         items: list[LetterboxdRSSWatchlistItem] = []
+
+        # Empty watchlist returns 404, handle gracefully
+        if xml_content is None:
+            logger.info("letterboxd_watchlist_empty", username=self.username)
+            return items
 
         try:
             root = ElementTree.fromstring(xml_content)
