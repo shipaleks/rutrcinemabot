@@ -456,7 +456,13 @@ class PirateBayClient:
                     )
 
         if not rows:
-            logger.warning("no_results_found_with_any_pattern")
+            # Log HTML snippet for debugging
+            html_preview = html[:2000] if len(html) > 2000 else html
+            logger.warning(
+                "no_results_found_with_any_pattern",
+                html_length=len(html),
+                html_preview=html_preview,
+            )
 
         logger.debug("found_result_rows", count=len(rows), pattern=matched_pattern)
 
