@@ -805,13 +805,37 @@ class RutrackerClient:
         # Apply quality filter
         if quality:
             quality_upper = quality.upper()
-            results = [
-                r
-                for r in results
-                if r.quality
-                and r.quality.upper() == quality_upper
-                or quality_upper in r.title.upper()
-            ]
+            filtered_results = []
+            for r in results:
+                # Check detected quality
+                if r.quality and r.quality.upper() == quality_upper:
+                    filtered_results.append(r)
+                    continue
+                # Check if quality string is in title
+                if quality_upper in r.title.upper():
+                    filtered_results.append(r)
+                    continue
+                # Check quality patterns in title for flexible matching
+                matched = False
+                for q_enum, q_patterns in QUALITY_PATTERNS.items():
+                    if q_enum.value.upper() == quality_upper:
+                        for pattern in q_patterns:
+                            if re.search(pattern, r.title, re.IGNORECASE):
+                                filtered_results.append(r)
+                                matched = True
+                                break
+                        break
+                if matched:
+                    continue
+            # If filter removed all results, return unfiltered but log warning
+            if filtered_results:
+                results = filtered_results
+            else:
+                logger.warning(
+                    "quality_filter_removed_all_results",
+                    quality=quality,
+                    original_count=len(results),
+                )
             logger.info("results_after_quality_filter", count=len(results))
 
         # Fetch magnet links for results
