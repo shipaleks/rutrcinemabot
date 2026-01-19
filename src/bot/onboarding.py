@@ -629,7 +629,7 @@ async def handle_rutracker_pass_input(update: Update, context: ContextTypes.DEFA
 
         # Test login
         async with RutrackerClient(username=username, password=password) as client:
-            if await client.login():
+            if await client._login():
                 # Save credentials
                 async with get_storage() as storage:
                     db_user = await storage.get_user_by_telegram_id(user.id)
