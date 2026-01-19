@@ -96,11 +96,14 @@ def get_cached_result(result_id: str) -> dict[str, Any] | None:
 # =============================================================================
 
 
-async def handle_rutracker_search(tool_input: dict[str, Any]) -> str:
+async def handle_rutracker_search(
+    tool_input: dict[str, Any], telegram_id: int | None = None
+) -> str:
     """Handle rutracker_search tool call.
 
     Args:
         tool_input: Tool parameters (query, quality, category).
+        telegram_id: Telegram user ID to get per-user credentials.
 
     Returns:
         JSON string with search results.
@@ -109,16 +112,28 @@ async def handle_rutracker_search(tool_input: dict[str, Any]) -> str:
     quality = tool_input.get("quality")
     category = tool_input.get("category")
 
-    logger.info("rutracker_search", query=query, quality=quality)
+    logger.info("rutracker_search", query=query, quality=quality, telegram_id=telegram_id)
 
-    # Get credentials from settings if available
-    username = settings.rutracker_username
-    password = (
-        settings.rutracker_password.get_secret_value() if settings.rutracker_password else None
-    )
+    # Try to get per-user credentials first
+    username = None
+    password = None
 
-    if not settings.has_rutracker_credentials:
-        logger.warning("rutracker_credentials_not_configured")
+    if telegram_id:
+        from src.bot.rutracker_auth import get_user_rutracker_credentials
+
+        username, password = await get_user_rutracker_credentials(telegram_id)
+        if username:
+            logger.info("using_per_user_credentials", telegram_id=telegram_id)
+
+    # Fall back to global settings if no per-user credentials
+    if not username:
+        username = settings.rutracker_username
+        password = (
+            settings.rutracker_password.get_secret_value() if settings.rutracker_password else None
+        )
+
+    if not username:
+        logger.warning("rutracker_credentials_not_configured", telegram_id=telegram_id)
 
     try:
         async with RutrackerClient(username=username, password=password) as client:
@@ -529,17 +544,24 @@ async def handle_seedbox_download(tool_input: dict[str, Any]) -> str:
     )
 
 
-def create_tool_executor() -> ToolExecutor:
+def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
     """Create and configure a tool executor with all handlers.
+
+    Args:
+        telegram_id: Telegram user ID for per-user credentials.
 
     Returns:
         Configured ToolExecutor instance.
     """
     executor = ToolExecutor()
 
+    # Create wrapper for rutracker handler to pass telegram_id
+    async def rutracker_handler(tool_input: dict[str, Any]) -> str:
+        return await handle_rutracker_search(tool_input, telegram_id=telegram_id)
+
     executor.register_handlers(
         {
-            "rutracker_search": handle_rutracker_search,
+            "rutracker_search": rutracker_handler,
             "piratebay_search": handle_piratebay_search,
             "tmdb_search": handle_tmdb_search,
             "tmdb_credits": handle_tmdb_credits,
@@ -689,8 +711,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.warning("failed_to_load_preferences", error=str(e))
 
-    # Create Claude client with tools
-    executor = create_tool_executor()
+    # Create Claude client with tools (pass telegram_id for per-user credentials)
+    executor = create_tool_executor(telegram_id=user.id)
     client = ClaudeClient(
         tools=get_tool_definitions(),
         tool_executor=executor,
