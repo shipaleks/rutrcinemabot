@@ -329,13 +329,31 @@ async def get_user_rutracker_credentials(telegram_id: int) -> tuple[str | None, 
     """
     try:
         encryption_key = settings.encryption_key.get_secret_value()
+        logger.debug("getting_rutracker_credentials", telegram_id=telegram_id, db_path=DB_PATH)
+
         async with UserStorage(DB_PATH, encryption_key) as storage:
             db_user = await storage.get_user_by_telegram_id(telegram_id)
+            logger.debug(
+                "db_user_lookup",
+                telegram_id=telegram_id,
+                found=db_user is not None,
+                db_user_id=db_user.id if db_user else None,
+            )
+
             if not db_user:
+                logger.info("rutracker_user_not_found", telegram_id=telegram_id)
                 return None, None
 
             username = await storage.get_credential(db_user.id, CredentialType.RUTRACKER_USERNAME)
             password = await storage.get_credential(db_user.id, CredentialType.RUTRACKER_PASSWORD)
+
+            logger.info(
+                "rutracker_credentials_lookup",
+                telegram_id=telegram_id,
+                db_user_id=db_user.id,
+                has_username=username is not None,
+                has_password=password is not None,
+            )
 
             return username, password
 
