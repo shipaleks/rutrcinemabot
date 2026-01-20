@@ -1471,6 +1471,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         thinking_budget=thinking_budget,
     )
 
+    # Track search results added during this request
+    results_before = set(_search_results_cache.keys())
+
     try:
         # Stream response to user
         response_text = await send_streaming_message(
@@ -1486,24 +1489,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             response_length=len(response_text),
         )
 
-        # Check if response contains search results that need buttons
-        # Claude's response will mention result IDs if it wants to offer downloads
-        if any(rid in response_text for rid in _search_results_cache):
-            # Find mentioned results
-            mentioned_results = []
-            for result_id, result_data in _search_results_cache.items():
-                if result_id in response_text:
-                    mentioned_results.append(
+        # Check for new search results added during this request
+        results_after = set(_search_results_cache.keys())
+        new_result_ids = results_after - results_before
+
+        if new_result_ids:
+            # Send download buttons for new results
+            new_results = []
+            for result_id in list(new_result_ids)[:5]:  # Max 5 buttons
+                result_data = _search_results_cache.get(result_id)
+                if result_data:
+                    new_results.append(
                         {
                             "id": result_id,
                             "title": result_data.get("title", "Unknown"),
                         }
                     )
 
-            if mentioned_results:
-                keyboard = format_search_results_keyboard(mentioned_results)
+            if new_results:
+                keyboard = format_search_results_keyboard(new_results)
                 await update.message.reply_text(
-                    "📥 Выберите раздачу для скачивания:",
+                    "Скачать:",
                     reply_markup=keyboard,
                 )
 
