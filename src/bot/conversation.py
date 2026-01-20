@@ -138,6 +138,7 @@ async def handle_rutracker_search(
                             "torrent_url": result.torrent_url,
                             "torrent_id": result.torrent_id,
                             "source": "rutracker",
+                            "seeds": result.seeds,
                         },
                     )
                     formatted_results.append(
@@ -213,6 +214,7 @@ async def handle_rutracker_search(
                         "title": result.title,
                         "magnet": result.magnet,
                         "source": "rutracker",
+                        "seeds": result.seeds,
                     },
                 )
                 formatted_results.append(
@@ -290,6 +292,7 @@ async def handle_piratebay_search(tool_input: dict[str, Any]) -> str:
                         "title": result.title,
                         "magnet": result.magnet,
                         "source": "piratebay",
+                        "seeds": result.seeds,
                     },
                 )
                 formatted_results.append(
@@ -1491,17 +1494,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         new_result_ids = results_after - results_before
 
         if new_result_ids:
-            # Send download buttons for new results
-            new_results = []
-            for result_id in list(new_result_ids)[:5]:  # Max 5 buttons
+            # Collect new results with seeds for sorting
+            new_results_with_seeds = []
+            for result_id in new_result_ids:
                 result_data = _search_results_cache.get(result_id)
                 if result_data:
-                    new_results.append(
+                    new_results_with_seeds.append(
                         {
                             "id": result_id,
                             "title": result_data.get("title", "Unknown"),
+                            "seeds": result_data.get("seeds", 0),
                         }
                     )
+
+            # Sort by seeds descending (best results first)
+            new_results_with_seeds.sort(key=lambda x: x.get("seeds", 0), reverse=True)
+
+            # Take top 5 for buttons
+            new_results = [{"id": r["id"], "title": r["title"]} for r in new_results_with_seeds[:5]]
 
             if new_results:
                 keyboard = format_search_results_keyboard(new_results)
@@ -1641,35 +1651,56 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
 
     # If still no magnet, show error
     if not magnet:
+        logger.warning("no_magnet_available", result_id=result_id, title=title)
         await query.edit_message_text(
-            f"**{title}**\n\nНе удалось получить magnet-ссылку. Попробуйте найти раздачу заново.",
-            parse_mode="Markdown",
+            f"<b>{title}</b>\n\nНе удалось получить magnet-ссылку. Попробуйте найти раздачу заново.",
+            parse_mode="HTML",
         )
         return
+
+    # Ensure magnet is a string (not a list)
+    if isinstance(magnet, list):
+        magnet = magnet[0] if magnet else ""
+
+    logger.info(
+        "sending_magnet_to_user",
+        result_id=result_id,
+        magnet_length=len(magnet),
+        magnet_preview=magnet[:100] if magnet else "empty",
+    )
 
     # Try to send to seedbox
     download_result = await send_magnet_to_seedbox(magnet)
 
     if download_result.get("status") == "sent":
         await query.edit_message_text(
-            f"✅ Торрент добавлен на скачивание!\n\n"
-            f"📥 **{title}**\n\n"
+            f"Торрент добавлен на скачивание!\n\n"
+            f"<b>{title}</b>\n\n"
             f"Скачивание началось на вашем seedbox.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
     else:
         # Seedbox not configured - show magnet link
-        # Split magnet link if too long for message
+        logger.info("seedbox_not_configured", showing_magnet=True)
         message = query.message
-        if len(magnet) > 4000:
+
+        # Use HTML mode and <code> tag for magnet (more reliable than Markdown backticks)
+        if len(magnet) > 3500:
+            # Magnet too long for single message, send in parts
             await query.edit_message_text(
-                f"📥 **{title}**\n\nСкопируйте magnet-ссылку ниже:",
-                parse_mode="Markdown",
+                f"<b>{title}</b>\n\nMagnet-ссылка отправлена отдельным сообщением:",
+                parse_mode="HTML",
             )
-            if message:
-                await message.reply_text(f"`{magnet}`", parse_mode="Markdown")
+            if message and hasattr(message, "reply_text"):
+                # Send magnet as plain text without formatting for reliability
+                await message.reply_text(magnet)
         else:
-            await query.edit_message_text(
-                f"📥 **{title}**\n\nСкопируйте magnet-ссылку:\n`{magnet}`",
-                parse_mode="Markdown",
-            )
+            try:
+                await query.edit_message_text(
+                    f"<b>{title}</b>\n\nСкопируйте magnet-ссылку:\n<code>{magnet}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                # If HTML formatting fails, try plain text
+                logger.warning("html_format_failed", error=str(e))
+                await query.edit_message_text(f"{title}\n\nMagnet-ссылка:\n{magnet}")
