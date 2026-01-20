@@ -71,12 +71,14 @@ class ConversationContext:
     Attributes:
         messages: List of messages in the conversation
         user_preferences: User's preferences for personalization
+        user_profile_md: Full markdown profile for Claude's context
         telegram_user_id: Telegram user ID for tool calls
         max_history: Maximum number of messages to keep
     """
 
     messages: list[Message] = field(default_factory=list)
     user_preferences: dict[str, Any] | None = None
+    user_profile_md: str | None = None
     telegram_user_id: int | None = None
     max_history: int = 20
 
@@ -168,8 +170,11 @@ class ClaudeClient:
         # Add user message to context
         context.add_message("user", user_message)
 
-        # Get system prompt with user preferences
-        system_prompt = get_system_prompt(context.user_preferences)
+        # Get system prompt with user preferences and profile
+        system_prompt = get_system_prompt(
+            user_preferences=context.user_preferences,
+            user_profile_md=context.user_profile_md,
+        )
 
         # Prepare API call parameters
         params: dict[str, Any] = {
@@ -379,8 +384,11 @@ class ClaudeClient:
         # Add user message to context
         context.add_message("user", user_message)
 
-        # Get system prompt with user preferences
-        system_prompt = get_system_prompt(context.user_preferences)
+        # Get system prompt with user preferences and profile
+        system_prompt = get_system_prompt(
+            user_preferences=context.user_preferences,
+            user_profile_md=context.user_profile_md,
+        )
 
         # Prepare API call parameters
         params: dict[str, Any] = {

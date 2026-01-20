@@ -93,6 +93,43 @@ def get_cached_result(result_id: str) -> dict[str, Any] | None:
 
 
 # =============================================================================
+# Tool User ID Resolution Helper
+# =============================================================================
+
+
+async def _resolve_user_id(user_id_input: int | None) -> int | None:
+    """Resolve user_id from tool input to internal database user ID.
+
+    Claude provides telegram_user_id as user_id in tool calls.
+    This function looks up the internal database user ID.
+
+    Args:
+        user_id_input: The user_id from tool input (may be telegram_id)
+
+    Returns:
+        Internal database user ID or None if not found
+    """
+    if user_id_input is None:
+        return None
+
+    try:
+        async with get_storage() as storage:
+            # First try as internal user ID
+            user = await storage.get_user(int(user_id_input))
+            if user:
+                return user.id
+
+            # If not found, try as telegram ID
+            user = await storage.get_user_by_telegram_id(int(user_id_input))
+            if user:
+                return user.id
+
+            return None
+    except Exception:
+        return None
+
+
+# =============================================================================
 # Tool Handler Implementations
 # =============================================================================
 
@@ -656,12 +693,17 @@ async def handle_read_user_profile(tool_input: dict[str, Any]) -> str:
     Returns:
         JSON string with user's markdown profile.
     """
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
 
-    if user_id is None:
+    if user_id_input is None:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
 
-    logger.info("read_user_profile", user_id=user_id)
+    # Resolve to internal user ID (Claude passes telegram_id as user_id)
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
+
+    logger.info("read_user_profile", user_id=user_id, input_id=user_id_input)
 
     try:
         async with get_storage() as storage:
@@ -690,17 +732,22 @@ async def handle_update_user_profile(tool_input: dict[str, Any]) -> str:
     Returns:
         JSON string with update status.
     """
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     section = tool_input.get("section")
     content = tool_input.get("content")
 
-    if not all([user_id, section, content]):
+    if not all([user_id_input, section, content]):
         return json.dumps(
             {"status": "error", "error": "user_id, section, and content are required"},
             ensure_ascii=False,
         )
 
-    logger.info("update_user_profile", user_id=user_id, section=section)
+    # Resolve to internal user ID (Claude passes telegram_id as user_id)
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
+
+    logger.info("update_user_profile", user_id=user_id, section=section, input_id=user_id_input)
 
     try:
         async with get_storage() as storage:
@@ -722,7 +769,7 @@ async def handle_update_user_profile(tool_input: dict[str, Any]) -> str:
 
 async def handle_add_to_watchlist(tool_input: dict[str, Any]) -> str:
     """Handle add_to_watchlist tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     tmdb_id = tool_input.get("tmdb_id")
     media_type = tool_input.get("media_type", "movie")
     title = tool_input.get("title", "Unknown")
@@ -730,11 +777,16 @@ async def handle_add_to_watchlist(tool_input: dict[str, Any]) -> str:
     priority = tool_input.get("priority", 0)
     notes = tool_input.get("notes")
 
-    if not user_id or not tmdb_id:
+    if not user_id_input or not tmdb_id:
         return json.dumps(
             {"status": "error", "error": "user_id and tmdb_id are required"},
             ensure_ascii=False,
         )
+
+    # Resolve to internal user ID
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("add_to_watchlist", user_id=user_id, tmdb_id=tmdb_id, title=title)
 
@@ -841,7 +893,7 @@ async def handle_get_watchlist(tool_input: dict[str, Any]) -> str:
 
 async def handle_mark_watched(tool_input: dict[str, Any]) -> str:
     """Handle mark_watched tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     tmdb_id = tool_input.get("tmdb_id")
     media_type = tool_input.get("media_type", "movie")
     title = tool_input.get("title", "Unknown")
@@ -849,11 +901,16 @@ async def handle_mark_watched(tool_input: dict[str, Any]) -> str:
     rating = tool_input.get("rating")
     review = tool_input.get("review")
 
-    if not user_id or not tmdb_id:
+    if not user_id_input or not tmdb_id:
         return json.dumps(
             {"status": "error", "error": "user_id and tmdb_id are required"},
             ensure_ascii=False,
         )
+
+    # Resolve to internal user ID
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("mark_watched", user_id=user_id, tmdb_id=tmdb_id, title=title, rating=rating)
 
@@ -985,17 +1042,22 @@ async def handle_get_watch_history(tool_input: dict[str, Any]) -> str:
 
 async def handle_add_to_blocklist(tool_input: dict[str, Any]) -> str:
     """Handle add_to_blocklist tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     block_type = tool_input.get("block_type")
     block_value = tool_input.get("block_value")
     block_level = tool_input.get("block_level", "dont_recommend")
     notes = tool_input.get("notes")
 
-    if not all([user_id, block_type, block_value]):
+    if not all([user_id_input, block_type, block_value]):
         return json.dumps(
             {"status": "error", "error": "user_id, block_type, and block_value are required"},
             ensure_ascii=False,
         )
+
+    # Resolve to internal user ID
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("add_to_blocklist", user_id=user_id, block_type=block_type, block_value=block_value)
 
@@ -1459,7 +1521,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Set telegram user ID for tool calls
     conv_context.telegram_user_id = user.id
 
-    # Load user preferences into context
+    # Load user preferences and profile into context
     try:
         encryption_key = None
         if settings.encryption_key:
@@ -1482,6 +1544,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         audio_language=preferences.audio_language,
                         genres=preferences.preferred_genres,
                     )
+
+                # Load user profile for Claude's context
+                profile_manager = ProfileManager(storage)
+                conv_context.user_profile_md = await profile_manager.get_or_create_profile(
+                    db_user.id, user=db_user, preferences=preferences
+                )
+                logger.debug(
+                    "user_profile_loaded",
+                    user_id=user.id,
+                    profile_length=len(conv_context.user_profile_md)
+                    if conv_context.user_profile_md
+                    else 0,
+                )
     except Exception as e:
         logger.warning("failed_to_load_preferences", error=str(e))
 
