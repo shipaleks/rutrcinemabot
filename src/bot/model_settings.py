@@ -28,7 +28,7 @@ logger = structlog.get_logger(__name__)
 # Available Claude models (all 4.5 generation)
 MODELS = {
     "haiku": {
-        "id": "claude-haiku-4-5-20250929",
+        "id": "claude-haiku-4-5-20251001",
         "name": "Haiku 4.5",
         "description": "Быстрый, дешёвый",
         "emoji": "",
