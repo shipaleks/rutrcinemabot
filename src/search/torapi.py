@@ -30,12 +30,15 @@ DEFAULT_TIMEOUT = 30.0
 
 
 class TorAPIProvider(str, Enum):
-    """Available torrent providers."""
+    """Available torrent providers.
 
-    RUTRACKER = "RuTracker"
-    KINOZAL = "Kinozal"
-    RUTOR = "RuTor"
-    NONAMECLUB = "NoNameClub"
+    Note: API endpoints use lowercase names.
+    """
+
+    RUTRACKER = "rutracker"
+    KINOZAL = "kinozal"
+    RUTOR = "rutor"
+    NONAMECLUB = "nonameclub"
     ALL = "all"
 
 
@@ -163,9 +166,8 @@ class TorAPIClient:
             quality=quality,
         )
 
-        # Build search URL
-        provider_path = provider.value.lower() if provider != TorAPIProvider.ALL else "all"
-        url = f"{self.base_url}/api/search/title/{provider_path}"
+        # Build search URL (provider values are already lowercase)
+        url = f"{self.base_url}/api/search/title/{provider.value}"
 
         try:
             response = await self.client.get(url, params={"query": query})
@@ -183,7 +185,7 @@ class TorAPIClient:
 
         # Handle response format (single provider or multiple)
         if provider == TorAPIProvider.ALL:
-            # Response is dict with provider keys
+            # Response is dict with provider keys (e.g., {"RuTracker": [...], "Kinozal": [...]})
             for prov_name, prov_results in data.items():
                 if isinstance(prov_results, list):
                     for item in prov_results:
@@ -191,13 +193,12 @@ class TorAPIClient:
                         if result:
                             results.append(result)
         else:
-            # Response might be dict with provider key or direct list
-            items = data.get(provider.value, data) if isinstance(data, dict) else data
-            if isinstance(items, list):
-                for item in items:
-                    result = self._parse_result(item, provider.value)
-                    if result:
-                        results.append(result)
+            # Single provider - response is a direct list
+            items = data if isinstance(data, list) else []
+            for item in items:
+                result = self._parse_result(item, provider.value)
+                if result:
+                    results.append(result)
 
         logger.info("torapi_results_found", count=len(results))
 
@@ -259,8 +260,7 @@ class TorAPIClient:
         Returns:
             Detailed torrent info or None.
         """
-        provider_path = provider.value.lower()
-        url = f"{self.base_url}/api/search/id/{provider_path}"
+        url = f"{self.base_url}/api/search/id/{provider.value}"
 
         try:
             response = await self.client.get(url, params={"id": torrent_id})
