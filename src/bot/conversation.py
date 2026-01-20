@@ -1456,11 +1456,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.warning("failed_to_load_preferences", error=str(e))
 
+    # Get user's AI model settings
+    from src.bot.model_settings import get_user_model_settings
+
+    user_model, thinking_budget = await get_user_model_settings(user.id)
+
     # Create Claude client with tools (pass telegram_id for per-user credentials)
     executor = create_tool_executor(telegram_id=user.id)
     client = ClaudeClient(
         tools=get_tool_definitions(),
         tool_executor=executor,
+        model=user_model,
+        thinking_budget=thinking_budget,
     )
 
     try:
