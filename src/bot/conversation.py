@@ -1555,36 +1555,31 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
         has_magnet=bool(magnet),
     )
 
-    # If no magnet cached, try to fetch it via Rutracker scraping
+    # If no magnet cached, fetch it from Rutracker page (no auth required for magnet)
     if not magnet and torrent_id and source == "rutracker":
         try:
-            from src.bot.rutracker_auth import get_user_rutracker_credentials
-            from src.search.rutracker import RutrackerClient
+            import httpx
+            from bs4 import BeautifulSoup
 
-            # Get user credentials
-            user_id = query.from_user.id if query.from_user else None
-            username, password = None, None
-            if user_id:
-                username, password = await get_user_rutracker_credentials(user_id)
-
-            # Fall back to global settings
-            if not username:
-                username = settings.rutracker_username
-                password = (
-                    settings.rutracker_password.get_secret_value()
-                    if settings.rutracker_password
-                    else None
+            # Magnet links are visible on Rutracker without authentication
+            url = f"https://rutracker.org/forum/viewtopic.php?t={torrent_id}"
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                response = await http_client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+                    },
                 )
-
-            if username and password:
-                async with RutrackerClient(username=username, password=password) as client:
-                    magnet = await client.get_magnet_link(int(torrent_id))
-                    if magnet:
-                        result["magnet"] = magnet
-                        cache_search_result(result_id, result)
-                        logger.info("magnet_fetched_via_scraping", torrent_id=torrent_id)
-            else:
-                logger.warning("no_credentials_for_magnet_fetch", torrent_id=torrent_id)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, "lxml")
+                    magnet_elem = soup.select_one('a.magnet-link[href^="magnet:"]')
+                    if magnet_elem:
+                        magnet = magnet_elem.get("href", "")
+                        if magnet:
+                            result["magnet"] = magnet
+                            cache_search_result(result_id, result)
+                            logger.info("magnet_fetched_from_page", torrent_id=torrent_id)
         except Exception as e:
             logger.warning("failed_to_fetch_magnet", error=str(e), torrent_id=torrent_id)
 
