@@ -136,6 +136,7 @@ async def handle_rutracker_search(
                             "title": result.name,
                             "magnet": result.magnet or "",
                             "torrent_url": result.torrent_url,
+                            "torrent_id": result.torrent_id,
                             "source": "rutracker",
                         },
                     )
@@ -1543,13 +1544,41 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
 
     title = result.get("title", "Unknown")
     magnet = result.get("magnet", "")
+    torrent_id = result.get("torrent_id", "")
+    source = result.get("source", "")
 
     logger.info(
         "download_requested",
         user_id=query.from_user.id if query.from_user else None,
         result_id=result_id,
         title=title,
+        has_magnet=bool(magnet),
     )
+
+    # If no magnet cached, try to fetch it from TorAPI
+    if not magnet and torrent_id and source == "rutracker":
+        try:
+            from src.search.torapi import TorAPIClient, TorAPIProvider
+
+            async with TorAPIClient() as torapi:
+                details = await torapi.get_details(torrent_id, TorAPIProvider.RUTRACKER)
+                if details:
+                    magnet = details.get("Magnet", "") or details.get("magnet", "")
+                    if magnet:
+                        # Update cache with magnet
+                        result["magnet"] = magnet
+                        cache_search_result(result_id, result)
+                        logger.info("magnet_fetched_from_torapi", torrent_id=torrent_id)
+        except Exception as e:
+            logger.warning("failed_to_fetch_magnet", error=str(e), torrent_id=torrent_id)
+
+    # If still no magnet, show error
+    if not magnet:
+        await query.edit_message_text(
+            f"**{title}**\n\nНе удалось получить magnet-ссылку. Попробуйте найти раздачу заново.",
+            parse_mode="Markdown",
+        )
+        return
 
     # Try to send to seedbox
     download_result = await send_magnet_to_seedbox(magnet)
