@@ -14,7 +14,7 @@ Usage:
     scheduler.stop()
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -24,7 +24,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from src.config import settings
 from src.monitoring.checker import FoundRelease, ReleaseChecker
 from src.seedbox import send_magnet_to_seedbox
-from src.user.storage import get_storage
+from src.user.storage import Monitor, get_storage
 
 if TYPE_CHECKING:
     from telegram import Bot
@@ -33,6 +33,62 @@ logger = structlog.get_logger(__name__)
 
 # Default check interval (6 hours)
 DEFAULT_CHECK_INTERVAL_HOURS = 6
+
+# Scheduler runs every 2 hours to check which monitors need updating
+SCHEDULER_RUN_INTERVAL_HOURS = 2
+
+
+def get_check_interval_hours(release_date: datetime | None) -> int:
+    """Calculate check interval based on expected release date.
+
+    Args:
+        release_date: Expected release date from TMDB
+
+    Returns:
+        Interval in hours between checks
+    """
+    if release_date is None:
+        return 24  # Unknown date — check daily
+
+    now = datetime.now(UTC)
+    if release_date.tzinfo is None:
+        release_date = release_date.replace(tzinfo=UTC)
+
+    days_until = (release_date - now).days
+
+    if days_until <= 0:      # Already released — check frequently
+        return 2
+    elif days_until <= 7:    # Within a week
+        return 4
+    elif days_until <= 30:   # Within a month
+        return 12
+    elif days_until <= 90:   # Within 3 months
+        return 24
+    else:                    # Far future
+        return 72
+
+
+def should_check_monitor(monitor: Monitor) -> bool:
+    """Determine if a monitor should be checked based on smart frequency.
+
+    Args:
+        monitor: Monitor to check
+
+    Returns:
+        True if the monitor should be checked now
+    """
+    interval_hours = get_check_interval_hours(monitor.release_date)
+
+    if monitor.last_checked is None:
+        return True  # Never checked, should check now
+
+    now = datetime.now(UTC)
+    last_checked = monitor.last_checked
+    if last_checked.tzinfo is None:
+        last_checked = last_checked.replace(tzinfo=UTC)
+
+    time_since_check = now - last_checked
+    return time_since_check >= timedelta(hours=interval_hours)
 
 
 class MonitoringScheduler:
@@ -86,10 +142,10 @@ class MonitoringScheduler:
         self._scheduler = AsyncIOScheduler()
         self._checker = self._create_checker()
 
-        # Add the monitoring job
+        # Add the monitoring job - runs frequently, smart frequency filters inside
         self._scheduler.add_job(
             self._check_all_monitors,
-            trigger=IntervalTrigger(hours=self._check_interval_hours),
+            trigger=IntervalTrigger(hours=SCHEDULER_RUN_INTERVAL_HOURS),
             id="release_monitoring",
             name="Release Monitoring Check",
             replace_existing=True,
@@ -120,9 +176,14 @@ class MonitoringScheduler:
         return await self._check_all_monitors()
 
     async def _check_all_monitors(self) -> list[FoundRelease]:
-        """Check all active monitors for all users.
+        """Check active monitors using smart frequency logic.
 
-        This is the main job function that runs periodically.
+        Monitors are checked at different intervals based on their release date:
+        - Already released: every 2 hours
+        - Within a week: every 4 hours
+        - Within a month: every 12 hours
+        - Within 3 months: every 24 hours
+        - Far future: every 72 hours
 
         Returns:
             List of found releases
@@ -136,18 +197,37 @@ class MonitoringScheduler:
 
         try:
             async with get_storage() as storage:
-                # Get all active monitors across all users
-                # We need to iterate through users since monitors are per-user
-                monitors = await storage.get_all_active_monitors()
+                # Get all active monitors
+                all_monitors = await storage.get_all_active_monitors()
 
-                if not monitors:
+                if not all_monitors:
                     logger.debug("no_active_monitors")
                     return []
 
-                logger.info("checking_monitors", count=len(monitors))
+                # Filter to monitors that should be checked now
+                monitors_to_check = [m for m in all_monitors if should_check_monitor(m)]
 
-                # Check all monitors
-                found = await self._checker.check_all_monitors(monitors)
+                # Sort by release date: closer releases first
+                monitors_to_check.sort(
+                    key=lambda m: m.release_date or datetime.max.replace(tzinfo=UTC)
+                )
+
+                logger.info(
+                    "checking_monitors",
+                    total=len(all_monitors),
+                    to_check=len(monitors_to_check),
+                )
+
+                if not monitors_to_check:
+                    logger.debug("no_monitors_need_checking")
+                    return []
+
+                # Check filtered monitors
+                found = await self._checker.check_all_monitors(monitors_to_check)
+
+                # Update last_checked for all checked monitors
+                for monitor in monitors_to_check:
+                    await storage.update_monitor_last_checked(monitor.id)
 
                 for release in found:
                     found_releases.append(release)
@@ -197,8 +277,8 @@ class MonitoringScheduler:
 
         # Format notification message
         message = (
-            f"🎉 **{release.title}** теперь доступен!\n\n"
-            f"📺 {release.quality} | 📦 {release.size} | 🌱 {release.seeds} сидов\n\n"
+            f"**{release.title}** — доступен\n\n"
+            f"{release.quality} | {release.size} | {release.seeds} сидов\n"
             f"Источник: {release.source.title()}"
         )
 
