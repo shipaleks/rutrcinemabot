@@ -602,15 +602,47 @@ class RutrackerClient:
         results: list[SearchResult] = []
         soup = BeautifulSoup(html, "lxml")
 
-        # Find the results table
-        # Rutracker uses different table structures, try common patterns
-        rows = soup.select("tr.tCenter.hl-tr") or soup.select("tr.hl-tr")
+        # Check if search returned "no results" message
+        no_results_indicators = [
+            "Не найдено",
+            "ничего не найдено",
+            "Результатов нет",
+            "No results",
+        ]
+        page_text = soup.get_text().lower()
+        for indicator in no_results_indicators:
+            if indicator.lower() in page_text:
+                logger.info("search_page_no_results_message", indicator=indicator)
+                return []
 
-        if not rows:
-            # Try alternative selector for search results
-            rows = soup.select("#tor-tbl tbody tr")
+        # Find the results table - try multiple selectors
+        # Rutracker may use different structures depending on the page/theme
+        selectors_to_try = [
+            "tr.tCenter.hl-tr",
+            "tr.hl-tr",
+            "#tor-tbl tbody tr",
+            "#tor-tbl tr.hl-tr",
+            "table.forumline tr.hl-tr",
+            "#search-results tr",
+        ]
 
-        logger.debug("found_result_rows", count=len(rows))
+        rows = []
+        used_selector = None
+        for selector in selectors_to_try:
+            rows = soup.select(selector)
+            if rows:
+                used_selector = selector
+                break
+
+        # Log detailed info for debugging
+        logger.info(
+            "parse_search_results",
+            rows_found=len(rows),
+            selector_used=used_selector,
+            html_length=len(html),
+            has_tor_tbl=bool(soup.select("#tor-tbl")),
+            has_tlink=bool(soup.select("a.tLink")),
+        )
 
         for row in rows[:MAX_RESULTS]:
             try:
@@ -807,6 +839,14 @@ class RutrackerClient:
         # Parse results
         results = self._parse_search_results(html)
         logger.info("search_results_found", count=len(results))
+
+        # If no results found and we used category filter, retry without it
+        if not results and "f" in params:
+            logger.info("retrying_without_category_filter", query=query)
+            params_no_filter = {"nm": query, "o": "10", "s": "2"}
+            html = await self._fetch_page(search_url, params=params_no_filter)
+            results = self._parse_search_results(html)
+            logger.info("search_results_after_retry", count=len(results))
 
         # Apply quality filter
         if quality:
