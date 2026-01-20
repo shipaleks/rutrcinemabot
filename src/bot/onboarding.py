@@ -361,6 +361,11 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
                     video_quality=quality,
                     audio_language=audio,
                 )
+                # Sync settings to profile
+                from src.user.profile import ProfileManager
+
+                profile_manager = ProfileManager(storage)
+                await profile_manager.sync_from_preferences(db_user.id)
                 logger.info("preferences_saved", user_id=user.id, quality=quality, audio=audio)
     except Exception as e:
         logger.exception("save_preferences_error", user_id=user.id, error=str(e))
@@ -390,6 +395,105 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
 
     await query.edit_message_text(message, parse_mode="Markdown")
     return ConversationHandler.END
+
+
+# =============================================================================
+# Letterboxd Data Storage Helper
+# =============================================================================
+
+
+async def _save_letterboxd_to_storage(
+    storage,
+    user_id: int,
+    analysis,
+) -> tuple[int, int, int, int]:
+    """Save Letterboxd films to watched and watchlist tables.
+
+    Args:
+        storage: Storage instance
+        user_id: Internal user ID
+        analysis: LetterboxdExportAnalysis object
+
+    Returns:
+        Tuple of (watched_saved, watched_skipped, watchlist_saved, watchlist_skipped)
+    """
+    watched_saved = 0
+    watched_skipped = 0
+    watchlist_saved = 0
+    watchlist_skipped = 0
+
+    # Collect all watched films (favorites, loved, liked, disliked, hated)
+    all_watched = (
+        analysis.favorites + analysis.loved + analysis.liked + analysis.disliked + analysis.hated
+    )
+
+    # Save watched films
+    for film in all_watched:
+        try:
+            # Check if already in watched history
+            watched_list = await storage.get_watched(user_id, limit=500)
+            is_duplicate = any(
+                w.title.lower() == film.name.lower() and w.year == film.year for w in watched_list
+            )
+
+            if is_duplicate:
+                watched_skipped += 1
+                continue
+
+            # Convert Letterboxd rating (0.5-5.0) to 1-10 scale
+            rating_10 = None
+            if film.rating is not None:
+                rating_10 = round(film.rating * 2, 1)
+
+            await storage.add_watched(
+                user_id=user_id,
+                media_type="movie",
+                title=film.name,
+                year=film.year,
+                rating=rating_10,
+                review=film.review,
+                watched_at=film.watched_date or film.logged_date,
+            )
+            watched_saved += 1
+        except Exception as e:
+            logger.warning("letterboxd_save_watched_error", film=film.name, error=str(e))
+            watched_skipped += 1
+
+    # Save watchlist films
+    for film in analysis.watchlist:
+        try:
+            # Check if already in watchlist
+            existing_watchlist = await storage.get_watchlist(user_id, limit=500)
+            is_duplicate = any(
+                w.title.lower() == film.name.lower() and w.year == film.year
+                for w in existing_watchlist
+            )
+
+            if is_duplicate:
+                watchlist_skipped += 1
+                continue
+
+            await storage.add_to_watchlist(
+                user_id=user_id,
+                media_type="movie",
+                title=film.name,
+                year=film.year,
+            )
+            watchlist_saved += 1
+        except Exception as e:
+            logger.warning("letterboxd_save_watchlist_error", film=film.name, error=str(e))
+            watchlist_skipped += 1
+
+    logger.info(
+        "letterboxd_storage_saved",
+        user_id=user_id,
+        watched_saved=watched_saved,
+        watched_skipped=watched_skipped,
+        watchlist_saved=watchlist_saved,
+        watchlist_skipped=watchlist_skipped,
+    )
+
+    return watched_saved, watched_skipped, watchlist_saved, watchlist_skipped
 
 
 # =============================================================================
@@ -491,6 +595,20 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
                         "Disliked Films",
                         disliked_text,
                     )
+
+                # Save films to watched and watchlist tables
+                (
+                    watched_saved,
+                    watched_skipped,
+                    watchlist_saved,
+                    watchlist_skipped,
+                ) = await _save_letterboxd_to_storage(storage, db_user.id, analysis)
+                logger.info(
+                    "letterboxd_data_saved_to_tables",
+                    user_id=user.id,
+                    watched_saved=watched_saved,
+                    watchlist_saved=watchlist_saved,
+                )
 
         # Store stats for completion message
         if context.user_data is not None:
@@ -774,6 +892,11 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
                     await storage.update_preferences(user_id=db_user.id, video_quality=quality)
+                    # Sync updated settings to profile
+                    from src.user.profile import ProfileManager
+
+                    profile_manager = ProfileManager(storage)
+                    await profile_manager.sync_from_preferences(db_user.id)
                     prefs = await storage.get_preferences(db_user.id)
                     await query.edit_message_text(
                         f"Качество: **{quality}**",
@@ -792,6 +915,11 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
                     await storage.update_preferences(user_id=db_user.id, audio_language=audio)
+                    # Sync updated settings to profile
+                    from src.user.profile import ProfileManager
+
+                    profile_manager = ProfileManager(storage)
+                    await profile_manager.sync_from_preferences(db_user.id)
                     prefs = await storage.get_preferences(db_user.id)
                     await query.edit_message_text(
                         f"Аудио: **{audio_display}**",
