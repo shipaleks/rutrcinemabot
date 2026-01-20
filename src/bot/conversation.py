@@ -142,7 +142,6 @@ async def handle_rutracker_search(
                     )
                     formatted_results.append(
                         {
-                            "id": result_id,
                             "title": result.name,
                             "size": result.size,
                             "seeds": result.seeds,
@@ -218,7 +217,6 @@ async def handle_rutracker_search(
                 )
                 formatted_results.append(
                     {
-                        "id": result_id,
                         "title": result.title,
                         "size": result.size,
                         "seeds": result.seeds,
@@ -296,7 +294,6 @@ async def handle_piratebay_search(tool_input: dict[str, Any]) -> str:
                 )
                 formatted_results.append(
                     {
-                        "id": result_id,
                         "title": result.title,
                         "size": result.size,
                         "seeds": result.seeds,
