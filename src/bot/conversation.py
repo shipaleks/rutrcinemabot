@@ -1555,20 +1555,36 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
         has_magnet=bool(magnet),
     )
 
-    # If no magnet cached, try to fetch it from TorAPI
+    # If no magnet cached, try to fetch it via Rutracker scraping
     if not magnet and torrent_id and source == "rutracker":
         try:
-            from src.search.torapi import TorAPIClient, TorAPIProvider
+            from src.bot.rutracker_auth import get_user_rutracker_credentials
+            from src.search.rutracker import RutrackerClient
 
-            async with TorAPIClient() as torapi:
-                details = await torapi.get_details(torrent_id, TorAPIProvider.RUTRACKER)
-                if details:
-                    magnet = details.get("Magnet", "") or details.get("magnet", "")
+            # Get user credentials
+            user_id = query.from_user.id if query.from_user else None
+            username, password = None, None
+            if user_id:
+                username, password = await get_user_rutracker_credentials(user_id)
+
+            # Fall back to global settings
+            if not username:
+                username = settings.rutracker_username
+                password = (
+                    settings.rutracker_password.get_secret_value()
+                    if settings.rutracker_password
+                    else None
+                )
+
+            if username and password:
+                async with RutrackerClient(username=username, password=password) as client:
+                    magnet = await client.get_magnet_link(int(torrent_id))
                     if magnet:
-                        # Update cache with magnet
                         result["magnet"] = magnet
                         cache_search_result(result_id, result)
-                        logger.info("magnet_fetched_from_torapi", torrent_id=torrent_id)
+                        logger.info("magnet_fetched_via_scraping", torrent_id=torrent_id)
+            else:
+                logger.warning("no_credentials_for_magnet_fetch", torrent_id=torrent_id)
         except Exception as e:
             logger.warning("failed_to_fetch_magnet", error=str(e), torrent_id=torrent_id)
 
