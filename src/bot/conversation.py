@@ -102,6 +102,9 @@ async def handle_rutracker_search(
 ) -> str:
     """Handle rutracker_search tool call.
 
+    Uses TorAPI (unofficial API gateway) as primary method for reliability,
+    falls back to direct scraping if TorAPI fails.
+
     Args:
         tool_input: Tool parameters (query, quality, category).
         telegram_id: Telegram user ID to get per-user credentials.
@@ -115,7 +118,56 @@ async def handle_rutracker_search(
 
     logger.info("rutracker_search", query=query, quality=quality, telegram_id=telegram_id)
 
-    # Try to get per-user credentials first
+    # Try TorAPI first (more reliable, no auth needed)
+    try:
+        from src.search.torapi import TorAPIClient, TorAPIProvider
+
+        async with TorAPIClient() as torapi:
+            results = await torapi.search(query, TorAPIProvider.RUTRACKER, quality)
+
+            if results:
+                logger.info("torapi_search_success", count=len(results))
+                formatted_results = []
+                for result in results[:10]:
+                    result_id = f"rt_{hash(result.url) % 100000}"
+                    cache_search_result(
+                        result_id,
+                        {
+                            "title": result.name,
+                            "magnet": result.magnet or "",
+                            "torrent_url": result.torrent_url,
+                            "source": "rutracker",
+                        },
+                    )
+                    formatted_results.append(
+                        {
+                            "id": result_id,
+                            "title": result.name,
+                            "size": result.size,
+                            "seeds": result.seeds,
+                            "quality": result.quality if result.quality else "unknown",
+                        }
+                    )
+
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "source": "rutracker",
+                        "query": query,
+                        "results_count": len(formatted_results),
+                        "results": formatted_results,
+                    },
+                    ensure_ascii=False,
+                )
+            logger.info("torapi_no_results", query=query)
+
+    except Exception as e:
+        logger.warning("torapi_failed_trying_scraping", error=str(e))
+
+    # Fall back to direct scraping
+    logger.info("falling_back_to_scraping", query=query)
+
+    # Try to get per-user credentials
     username = None
     password = None
 
@@ -135,6 +187,16 @@ async def handle_rutracker_search(
 
     if not username:
         logger.warning("rutracker_credentials_not_configured", telegram_id=telegram_id)
+        return json.dumps(
+            {
+                "status": "no_results",
+                "source": "rutracker",
+                "query": query,
+                "reason": "no_credentials",
+                "suggestion": "TorAPI не вернул результатов, а для прямого поиска нужны credentials. Используй /rutracker для настройки или piratebay_search",
+            },
+            ensure_ascii=False,
+        )
 
     try:
         async with RutrackerClient(username=username, password=password) as client:
@@ -161,6 +223,20 @@ async def handle_rutracker_search(
                         "seeds": result.seeds,
                         "quality": result.quality if result.quality else "unknown",
                     }
+                )
+
+            # Return different status for empty results
+            if not formatted_results:
+                logger.info("rutracker_search_no_results", query=query, quality=quality)
+                return json.dumps(
+                    {
+                        "status": "no_results",
+                        "source": "rutracker",
+                        "query": query,
+                        "reason": "not_found",
+                        "suggestion": "Попробуй упростить запрос (убрать качество) или использовать piratebay_search с английским названием",
+                    },
+                    ensure_ascii=False,
                 )
 
             return json.dumps(
@@ -225,6 +301,20 @@ async def handle_piratebay_search(tool_input: dict[str, Any]) -> str:
                         "seeds": result.seeds,
                         "quality": result.quality if result.quality else "unknown",
                     }
+                )
+
+            # Return different status for empty results
+            if not formatted_results:
+                logger.info("piratebay_search_no_results", query=query, min_seeds=min_seeds)
+                return json.dumps(
+                    {
+                        "status": "no_results",
+                        "source": "piratebay",
+                        "query": query,
+                        "reason": "not_found",
+                        "suggestion": "Контент не найден. Попробуй другое название или уменьшить min_seeds",
+                    },
+                    ensure_ascii=False,
                 )
 
             return json.dumps(
