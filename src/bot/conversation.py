@@ -1348,7 +1348,7 @@ def format_search_results_keyboard(results: list[dict[str, Any]]) -> InlineKeybo
         size = result.get("size", "")
         seeds = result.get("seeds", 0)
 
-        # Build info string: [quality] size S:seeds
+        # Build info string: [quality] size S:seeds (put first so it's always visible)
         info_parts = []
         if quality:
             info_parts.append(f"[{quality}]")
@@ -1359,13 +1359,14 @@ def format_search_results_keyboard(results: list[dict[str, Any]]) -> InlineKeybo
         info_parts.append(f"S:{seeds}")
         info_str = " ".join(info_parts)
 
-        # Truncate title to fit with info (Telegram button limit ~64 chars)
-        max_title_len = 40 - len(info_str)
-        if max_title_len < 10:
-            max_title_len = 10
-        short_title = title[:max_title_len] + "..." if len(title) > max_title_len else title
+        # Truncate title to fit (Telegram button limit ~64 chars)
+        max_title_len = 38 - len(info_str)
+        if max_title_len < 8:
+            max_title_len = 8
+        short_title = title[:max_title_len] + ".." if len(title) > max_title_len else title
 
-        button_text = f"{short_title} | {info_str}"
+        # Info first, then title (so quality/size/seeds always visible)
+        button_text = f"{info_str} | {short_title}"
 
         buttons.append(
             [
