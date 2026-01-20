@@ -139,6 +139,8 @@ async def handle_rutracker_search(
                             "torrent_id": result.torrent_id,
                             "source": "rutracker",
                             "seeds": result.seeds,
+                            "size": result.size,
+                            "quality": result.quality,
                         },
                     )
                     formatted_results.append(
@@ -215,6 +217,8 @@ async def handle_rutracker_search(
                         "magnet": result.magnet,
                         "source": "rutracker",
                         "seeds": result.seeds,
+                        "size": result.size,
+                        "quality": result.quality,
                     },
                 )
                 formatted_results.append(
@@ -293,6 +297,8 @@ async def handle_piratebay_search(tool_input: dict[str, Any]) -> str:
                         "magnet": result.magnet,
                         "source": "piratebay",
                         "seeds": result.seeds,
+                        "size": result.size,
+                        "quality": result.quality,
                     },
                 )
                 formatted_results.append(
@@ -1329,7 +1335,7 @@ def format_search_results_keyboard(results: list[dict[str, Any]]) -> InlineKeybo
     """Create inline keyboard with download buttons for search results.
 
     Args:
-        results: List of search result dicts with id and title.
+        results: List of search result dicts with id, title, quality, size, seeds.
 
     Returns:
         InlineKeyboardMarkup with download buttons.
@@ -1338,12 +1344,33 @@ def format_search_results_keyboard(results: list[dict[str, Any]]) -> InlineKeybo
     for result in results[:5]:  # Max 5 buttons
         result_id = result.get("id", "")
         title = result.get("title", "Unknown")
-        # Truncate title for button
-        short_title = title[:30] + "..." if len(title) > 30 else title
+        quality = result.get("quality", "")
+        size = result.get("size", "")
+        seeds = result.get("seeds", 0)
+
+        # Build info string: [quality] size S:seeds
+        info_parts = []
+        if quality:
+            info_parts.append(f"[{quality}]")
+        if size:
+            # Shorten size (e.g., "14.5 GB" -> "14.5G")
+            short_size = size.replace(" GB", "G").replace(" MB", "M").replace(" TB", "T")
+            info_parts.append(short_size)
+        info_parts.append(f"S:{seeds}")
+        info_str = " ".join(info_parts)
+
+        # Truncate title to fit with info (Telegram button limit ~64 chars)
+        max_title_len = 40 - len(info_str)
+        if max_title_len < 10:
+            max_title_len = 10
+        short_title = title[:max_title_len] + "..." if len(title) > max_title_len else title
+
+        button_text = f"{short_title} | {info_str}"
+
         buttons.append(
             [
                 InlineKeyboardButton(
-                    text=f"📥 {short_title}",
+                    text=button_text,
                     callback_data=f"download_{result_id}",
                 )
             ]
@@ -1494,27 +1521,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         new_result_ids = results_after - results_before
 
         if new_result_ids:
-            # Collect new results with seeds for sorting
-            new_results_with_seeds = []
+            # Collect new results with all info for sorting and display
+            new_results_with_info = []
             for result_id in new_result_ids:
                 result_data = _search_results_cache.get(result_id)
                 if result_data:
-                    new_results_with_seeds.append(
+                    new_results_with_info.append(
                         {
                             "id": result_id,
                             "title": result_data.get("title", "Unknown"),
                             "seeds": result_data.get("seeds", 0),
+                            "size": result_data.get("size", ""),
+                            "quality": result_data.get("quality", ""),
                         }
                     )
 
             # Sort by seeds descending (best results first)
-            new_results_with_seeds.sort(key=lambda x: x.get("seeds", 0), reverse=True)
+            new_results_with_info.sort(key=lambda x: x.get("seeds", 0), reverse=True)
 
             # Take top 5 for buttons
-            new_results = [{"id": r["id"], "title": r["title"]} for r in new_results_with_seeds[:5]]
-
-            if new_results:
-                keyboard = format_search_results_keyboard(new_results)
+            if new_results_with_info[:5]:
+                keyboard = format_search_results_keyboard(new_results_with_info[:5])
                 await update.message.reply_text(
                     "Скачать:",
                     reply_markup=keyboard,
