@@ -17,8 +17,8 @@ from src.config import settings
 
 logger = structlog.get_logger(__name__)
 
-# Claude model to use
-CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
+# Default Claude model
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 
 
 @dataclass
@@ -121,23 +121,29 @@ class ClaudeClient:
         self,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
+        model: str | None = None,
+        thinking_budget: int = 0,
     ):
         """Initialize the Claude client.
 
         Args:
             tools: List of tool definitions for Claude to use
             tool_executor: Async function to execute tool calls
+            model: Claude model ID to use (default: claude-sonnet-4-5-20250929)
+            thinking_budget: Extended thinking budget in tokens (0 = disabled)
         """
         self.client = anthropic.AsyncAnthropic(
             api_key=settings.anthropic_api_key.get_secret_value()
         )
         self.tools = tools or []
         self.tool_executor = tool_executor
-        self.model = CLAUDE_MODEL
+        self.model = model or DEFAULT_CLAUDE_MODEL
+        self.thinking_budget = thinking_budget
 
         logger.info(
             "claude_client_initialized",
             model=self.model,
+            thinking_budget=self.thinking_budget,
             tools_count=len(self.tools),
         )
 
@@ -177,10 +183,20 @@ class ClaudeClient:
         if self.tools:
             params["tools"] = self.tools
 
+        # Add extended thinking if enabled
+        if self.thinking_budget > 0:
+            params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.thinking_budget,
+            }
+            # Extended thinking requires higher max_tokens
+            params["max_tokens"] = max(max_tokens, self.thinking_budget + 4096)
+
         logger.debug(
             "sending_message",
             message_length=len(user_message),
             history_length=len(context.messages),
+            thinking_enabled=self.thinking_budget > 0,
         )
 
         try:
@@ -378,10 +394,20 @@ class ClaudeClient:
         if self.tools:
             params["tools"] = self.tools
 
+        # Add extended thinking if enabled
+        if self.thinking_budget > 0:
+            params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.thinking_budget,
+            }
+            # Extended thinking requires higher max_tokens
+            params["max_tokens"] = max(max_tokens, self.thinking_budget + 4096)
+
         logger.debug(
             "starting_stream",
             message_length=len(user_message),
             history_length=len(context.messages),
+            thinking_enabled=self.thinking_budget > 0,
         )
 
         try:

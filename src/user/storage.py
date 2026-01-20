@@ -102,6 +102,9 @@ class Preference(BaseModel):
     excluded_genres: list[str] = Field(default_factory=list)
     auto_download: bool = False
     notification_enabled: bool = True
+    # AI model settings
+    claude_model: str = Field(default="claude-sonnet-4-5-20250929")
+    thinking_budget: int = Field(default=0)  # 0 = disabled, >0 = max thinking tokens
     created_at: datetime
     updated_at: datetime
 
@@ -161,6 +164,8 @@ class Monitor(BaseModel):
     auto_download: bool = False
     status: str = "active"  # active, found, cancelled
     found_at: datetime | None = None
+    release_date: datetime | None = None  # Expected release date from TMDB
+    last_checked: datetime | None = None  # Last time this monitor was checked
     created_at: datetime
 
 
@@ -498,6 +503,8 @@ class BaseStorage(ABC):
         excluded_genres: list[str] | None = None,
         auto_download: bool | None = None,
         notification_enabled: bool | None = None,
+        claude_model: str | None = None,
+        thinking_budget: int | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         pass
@@ -644,6 +651,7 @@ class BaseStorage(ABC):
         media_type: str = "movie",
         quality: str = "1080p",
         auto_download: bool = False,
+        release_date: datetime | None = None,
     ) -> Monitor:
         """Create a release monitor."""
         pass
@@ -675,6 +683,11 @@ class BaseStorage(ABC):
     @abstractmethod
     async def get_monitor(self, monitor_id: int) -> Monitor | None:
         """Get a single monitor by ID."""
+        pass
+
+    @abstractmethod
+    async def update_monitor_last_checked(self, monitor_id: int) -> None:
+        """Update the last_checked timestamp for a monitor."""
         pass
 
     @abstractmethod
@@ -972,6 +985,11 @@ class SQLiteStorage(BaseStorage):
                 UNIQUE(user_id, block_type, block_value)
             );
             CREATE INDEX IF NOT EXISTS idx_blocklist_user_id ON blocklist(user_id);
+            """,
+            # Migration 11: Add AI model settings to preferences
+            """
+            ALTER TABLE preferences ADD COLUMN claude_model TEXT DEFAULT 'claude-sonnet-4-5-20250929';
+            ALTER TABLE preferences ADD COLUMN thinking_budget INTEGER DEFAULT 0;
             """,
         ]
 
@@ -1293,6 +1311,8 @@ class SQLiteStorage(BaseStorage):
         excluded_genres: list[str] | None = None,
         auto_download: bool | None = None,
         notification_enabled: bool | None = None,
+        claude_model: str | None = None,
+        thinking_budget: int | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         existing = await self.get_preferences(user_id)
@@ -1323,6 +1343,12 @@ class SQLiteStorage(BaseStorage):
         if notification_enabled is not None:
             updates.append("notification_enabled = ?")
             params.append(1 if notification_enabled else 0)
+        if claude_model is not None:
+            updates.append("claude_model = ?")
+            params.append(claude_model)
+        if thinking_budget is not None:
+            updates.append("thinking_budget = ?")
+            params.append(thinking_budget)
 
         if not updates:
             return existing
@@ -1352,6 +1378,8 @@ class SQLiteStorage(BaseStorage):
             excluded_genres=json.loads(row["excluded_genres"] or "[]"),
             auto_download=bool(row["auto_download"]),
             notification_enabled=bool(row["notification_enabled"]),
+            claude_model=row["claude_model"] if "claude_model" in row.keys() else "claude-sonnet-4-5-20250929",
+            thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -1755,6 +1783,7 @@ class SQLiteStorage(BaseStorage):
         media_type: str = "movie",
         quality: str = "1080p",
         auto_download: bool = False,
+        release_date: datetime | None = None,
     ) -> Monitor:
         """Create a release monitor."""
         now = datetime.now(UTC)
@@ -1762,8 +1791,8 @@ class SQLiteStorage(BaseStorage):
         cursor = await self.db.execute(
             """
             INSERT INTO monitors
-                (user_id, title, tmdb_id, media_type, quality, auto_download, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+                (user_id, title, tmdb_id, media_type, quality, auto_download, status, release_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
             (
                 user_id,
@@ -1772,6 +1801,7 @@ class SQLiteStorage(BaseStorage):
                 media_type,
                 quality,
                 1 if auto_download else 0,
+                release_date.isoformat() if release_date else None,
                 now.isoformat(),
             ),
         )
@@ -1793,6 +1823,8 @@ class SQLiteStorage(BaseStorage):
             auto_download=auto_download,
             status="active",
             found_at=None,
+            release_date=release_date,
+            last_checked=None,
             created_at=now,
         )
 
@@ -1849,6 +1881,15 @@ class SQLiteStorage(BaseStorage):
         row = await cursor.fetchone()
         return self._row_to_monitor(row) if row else None
 
+    async def update_monitor_last_checked(self, monitor_id: int) -> None:
+        """Update the last_checked timestamp for a monitor."""
+        now = datetime.now(UTC)
+        await self.db.execute(
+            "UPDATE monitors SET last_checked = ? WHERE id = ?",
+            (now.isoformat(), monitor_id),
+        )
+        await self.db.commit()
+
     async def get_all_active_monitors(self) -> list[Monitor]:
         """Get all active monitors across all users."""
         cursor = await self.db.execute(
@@ -1878,6 +1919,8 @@ class SQLiteStorage(BaseStorage):
             auto_download=bool(row["auto_download"]),
             status=row["status"],
             found_at=datetime.fromisoformat(row["found_at"]) if row["found_at"] else None,
+            release_date=datetime.fromisoformat(row["release_date"]) if row.get("release_date") else None,
+            last_checked=datetime.fromisoformat(row["last_checked"]) if row.get("last_checked") else None,
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
@@ -2314,6 +2357,11 @@ class PostgresStorage(BaseStorage):
             );
             CREATE INDEX IF NOT EXISTS idx_blocklist_user_id ON blocklist(user_id);
             """,
+            # Migration 11: Add AI model settings to preferences
+            """
+            ALTER TABLE preferences ADD COLUMN IF NOT EXISTS claude_model TEXT DEFAULT 'claude-sonnet-4-5-20250929';
+            ALTER TABLE preferences ADD COLUMN IF NOT EXISTS thinking_budget INTEGER DEFAULT 0;
+            """,
         ]
 
         async with self.pool.acquire() as conn:
@@ -2615,6 +2663,8 @@ class PostgresStorage(BaseStorage):
         excluded_genres: list[str] | None = None,
         auto_download: bool | None = None,
         notification_enabled: bool | None = None,
+        claude_model: str | None = None,
+        thinking_budget: int | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         existing = await self.get_preferences(user_id)
@@ -2653,6 +2703,14 @@ class PostgresStorage(BaseStorage):
             updates.append(f"notification_enabled = ${param_idx}")
             params.append(notification_enabled)
             param_idx += 1
+        if claude_model is not None:
+            updates.append(f"claude_model = ${param_idx}")
+            params.append(claude_model)
+            param_idx += 1
+        if thinking_budget is not None:
+            updates.append(f"thinking_budget = ${param_idx}")
+            params.append(thinking_budget)
+            param_idx += 1
 
         if not updates:
             return existing
@@ -2690,6 +2748,8 @@ class PostgresStorage(BaseStorage):
             excluded_genres=excluded or [],
             auto_download=row["auto_download"],
             notification_enabled=row["notification_enabled"],
+            claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
+            thinking_budget=row.get("thinking_budget", 0),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -3057,14 +3117,15 @@ class PostgresStorage(BaseStorage):
         media_type: str = "movie",
         quality: str = "1080p",
         auto_download: bool = False,
+        release_date: datetime | None = None,
     ) -> Monitor:
         """Create a release monitor."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO monitors
-                    (user_id, title, tmdb_id, media_type, quality, auto_download)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                    (user_id, title, tmdb_id, media_type, quality, auto_download, release_date)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING *
                 """,
                 user_id,
@@ -3073,6 +3134,7 @@ class PostgresStorage(BaseStorage):
                 media_type,
                 quality,
                 auto_download,
+                release_date,
             )
 
         logger.info("monitor_created", user_id=user_id, title=title)
@@ -3133,6 +3195,14 @@ class PostgresStorage(BaseStorage):
             row = await conn.fetchrow("SELECT * FROM monitors WHERE id = $1", monitor_id)
         return self._row_to_monitor(row) if row else None
 
+    async def update_monitor_last_checked(self, monitor_id: int) -> None:
+        """Update the last_checked timestamp for a monitor."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE monitors SET last_checked = NOW() WHERE id = $1",
+                monitor_id,
+            )
+
     async def get_all_active_monitors(self) -> list[Monitor]:
         """Get all active monitors across all users."""
         async with self.pool.acquire() as conn:
@@ -3162,6 +3232,8 @@ class PostgresStorage(BaseStorage):
             auto_download=row["auto_download"],
             status=row["status"],
             found_at=row["found_at"],
+            release_date=row.get("release_date"),
+            last_checked=row.get("last_checked"),
             created_at=row["created_at"],
         )
 
