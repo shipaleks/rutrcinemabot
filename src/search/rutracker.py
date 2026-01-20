@@ -532,8 +532,8 @@ class RutrackerClient:
                         return await self._fetch_page(url, params, retry_auth=False)
 
                     raise RutrackerAuthError(
-                        "Authentication required. Rutracker redirected to login page. "
-                        "Please configure RUTRACKER_USERNAME and RUTRACKER_PASSWORD."
+                        "Authentication required. Rutracker requires login to search. "
+                        "Use /rutracker command to configure your credentials."
                     )
 
                 # Follow other redirects
@@ -564,11 +564,17 @@ class RutrackerClient:
                 or 'name="login_username"' in html
                 or "форма входа" in html.lower()
             )
-            if is_login_page and retry_auth and self.has_credentials:
-                logger.warning("login_page_detected", url=url)
-                self._authenticated = False
-                await self._login()
-                return await self._fetch_page(url, params, retry_auth=False)
+            if is_login_page:
+                if retry_auth and self.has_credentials:
+                    logger.warning("login_page_detected", url=url)
+                    self._authenticated = False
+                    await self._login()
+                    return await self._fetch_page(url, params, retry_auth=False)
+                logger.warning("login_page_no_credentials", url=url)
+                raise RutrackerAuthError(
+                    "Authentication required. Rutracker requires login to search. "
+                    "Use /rutracker command to configure your credentials."
+                )
 
             return html
 

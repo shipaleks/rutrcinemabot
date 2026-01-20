@@ -763,6 +763,20 @@ class TestRutrackerClientLoginRedirect:
                 with pytest.raises(RutrackerAuthError, match="Authentication required"):
                     await client._fetch_page("http://test.com/search")
 
+    @pytest.mark.asyncio
+    async def test_fetch_page_login_page_200_without_credentials(self):
+        """Test that login page content (200 response) raises error without credentials."""
+        with patch("httpx.AsyncClient.get") as mock_get:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.text = SAMPLE_LOGIN_PAGE_HTML
+            mock_response.raise_for_status = MagicMock()
+            mock_get.return_value = mock_response
+
+            async with RutrackerClient() as client:
+                with pytest.raises(RutrackerAuthError, match="Authentication required"):
+                    await client._fetch_page("http://test.com/search")
+
 
 class TestSearchRutrackerWithCredentials:
     """Tests for search_rutracker with credentials."""
