@@ -132,14 +132,10 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     )
                     return
 
-        await update.message.reply_text(
-            "Профиль не найден. Используйте /start для настройки."
-        )
+        await update.message.reply_text("Профиль не найден. Используйте /start для настройки.")
     except Exception as e:
         logger.exception("profile_handler_failed", user_id=user.id, error=str(e))
-        await update.message.reply_text(
-            "Не удалось загрузить профиль. Попробуйте позже."
-        )
+        await update.message.reply_text("Не удалось загрузить профиль. Попробуйте позже.")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

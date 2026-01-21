@@ -27,6 +27,7 @@ from src.user.storage import (
 )
 
 if TYPE_CHECKING:
+    from src.services.letterboxd_export import LetterboxdExportAnalysis
     from src.user.storage import BaseStorage, Preference, User, WatchedItem
 
 logger = structlog.get_logger()
@@ -413,7 +414,12 @@ class LearningDetector:
         self._storage = storage
 
     async def analyze_ratings(self, user_id: int) -> list[MemoryNote]:
-        """Analyze user's ratings to detect patterns.
+        """Analyze user's ratings to detect crew patterns.
+
+        Detects:
+        - Director affinity: 5+ films by same director with high ratings
+        - Actor preferences: 5+ films with same actor and high ratings
+        - Cinematographer patterns: (if data available)
 
         Args:
             user_id: Internal user ID
@@ -423,14 +429,14 @@ class LearningDetector:
         """
         notes: list[MemoryNote] = []
 
-        # Get crew stats for directors
-        crew_stats = await self._storage.get_crew_stats(
+        # 1. Analyze directors
+        director_stats = await self._storage.get_crew_stats(
             user_id, role="director", min_films=LEARNING_MIN_FILMS
         )
 
-        for stat in crew_stats:
+        for stat in director_stats:
             if stat.avg_rating >= HIGH_RATING_THRESHOLD:
-                content = f"Loves {stat.person_name}'s films ({stat.films_count} watched, avg rating {stat.avg_rating:.1f})"
+                content = f"Loves {stat.person_name}'s direction ({stat.films_count} films watched, avg rating {stat.avg_rating:.1f})"
                 keywords = ["director", stat.person_name.lower(), "pattern"]
 
                 # Check if we already have this note
@@ -452,6 +458,71 @@ class LearningDetector:
                         pattern="director_affinity",
                         person=stat.person_name,
                     )
+
+        # 2. Analyze actors
+        actor_stats = await self._storage.get_crew_stats(
+            user_id, role="actor", min_films=LEARNING_MIN_FILMS
+        )
+
+        for stat in actor_stats:
+            if stat.avg_rating >= HIGH_RATING_THRESHOLD:
+                content = f"Enjoys films with {stat.person_name} ({stat.films_count} films watched, avg rating {stat.avg_rating:.1f})"
+                keywords = ["actor", stat.person_name.lower(), "pattern"]
+
+                existing = await self._storage.search_memory_notes(
+                    user_id, stat.person_name, limit=1
+                )
+                if not existing:
+                    note = await self._storage.create_memory_note(
+                        user_id=user_id,
+                        content=content,
+                        source="rating_pattern",
+                        keywords=keywords,
+                        confidence=0.75,  # Slightly lower confidence for actors
+                    )
+                    notes.append(note)
+                    logger.info(
+                        "learning_detected",
+                        user_id=user_id,
+                        pattern="actor_affinity",
+                        person=stat.person_name,
+                    )
+
+        # 3. Analyze cinematographers (if we have enough data)
+        try:
+            cinematographer_stats = await self._storage.get_crew_stats(
+                user_id,
+                role="cinematographer",
+                min_films=3,  # Lower threshold for rare role
+            )
+
+            for stat in cinematographer_stats:
+                if stat.avg_rating >= HIGH_RATING_THRESHOLD:
+                    content = f"Appreciates {stat.person_name}'s cinematography ({stat.films_count} films)"
+                    keywords = ["cinematographer", stat.person_name.lower(), "pattern"]
+
+                    existing = await self._storage.search_memory_notes(
+                        user_id, stat.person_name, limit=1
+                    )
+                    if not existing:
+                        note = await self._storage.create_memory_note(
+                            user_id=user_id,
+                            content=content,
+                            source="rating_pattern",
+                            keywords=keywords,
+                            confidence=0.7,
+                        )
+                        notes.append(note)
+        except Exception:
+            # Cinematographer data may not be available
+            pass
+
+        if notes:
+            logger.info(
+                "ratings_analysis_complete",
+                user_id=user_id,
+                patterns_detected=len(notes),
+            )
 
         return notes
 
@@ -477,52 +548,156 @@ class LearningDetector:
     async def analyze_letterboxd_data(
         self,
         user_id: int,
-        letterboxd_data: dict,
+        analysis: "LetterboxdExportAnalysis",
     ) -> list[MemoryNote]:
         """Extract patterns from Letterboxd import data.
 
+        Detects:
+        - Favorites (highest rated films)
+        - Year preferences (older vs newer films)
+        - Rewatch patterns (films watched multiple times)
+        - Rating habits (harsh critic vs generous rater)
+        - Review style (if reviews present)
+
         Args:
             user_id: Internal user ID
-            letterboxd_data: Parsed Letterboxd export data
+            analysis: Parsed Letterboxd export analysis
 
         Returns:
             List of created memory notes
         """
         notes: list[MemoryNote] = []
 
-        # Extract high-rated films
-        if "diary" in letterboxd_data:
-            high_rated = [
-                entry
-                for entry in letterboxd_data["diary"]
-                if entry.get("rating", 0) >= 4.0  # Letterboxd 5-star scale
-            ]
-
-            if len(high_rated) >= 10:
-                content = f"Letterboxd history shows {len(high_rated)} highly-rated films"
+        # 1. Extract absolute favorites (4.5-5.0 rating)
+        if analysis.favorites:
+            top_films = [f"{f.name} ({f.year})" for f in analysis.favorites[:5]]
+            content = f"Absolute favorite films: {', '.join(top_films)}"
+            existing = await self._storage.search_memory_notes(user_id, "favorite films", limit=1)
+            if not existing:
                 note = await self._storage.create_memory_note(
                     user_id=user_id,
                     content=content,
                     source="letterboxd",
-                    keywords=["letterboxd", "history", "preferences"],
-                    confidence=0.7,
-                )
-                notes.append(note)
-
-        # Extract watchlist size and themes
-        if "watchlist" in letterboxd_data:
-            watchlist_size = len(letterboxd_data["watchlist"])
-            if watchlist_size > 0:
-                content = f"Has {watchlist_size} films in Letterboxd watchlist"
-                note = await self._storage.create_memory_note(
-                    user_id=user_id,
-                    content=content,
-                    source="letterboxd",
-                    keywords=["letterboxd", "watchlist"],
+                    keywords=["letterboxd", "favorites", "high-rating"],
                     confidence=0.9,
                 )
                 notes.append(note)
+                logger.info(
+                    "letterboxd_learning",
+                    user_id=user_id,
+                    pattern="favorites",
+                    count=len(analysis.favorites),
+                )
 
+        # 2. Films they strongly disliked (important for recommendations)
+        if analysis.hated:
+            hated_films = [f"{f.name} ({f.year})" for f in analysis.hated[:3]]
+            content = f"Strongly disliked films: {', '.join(hated_films)}"
+            existing = await self._storage.search_memory_notes(user_id, "disliked films", limit=1)
+            if not existing:
+                note = await self._storage.create_memory_note(
+                    user_id=user_id,
+                    content=content,
+                    source="letterboxd",
+                    keywords=["letterboxd", "disliked", "avoid"],
+                    confidence=0.85,
+                )
+                notes.append(note)
+
+        # 3. Analyze year preferences
+        if analysis.total_rated >= 20:
+            years = [f.year for f in analysis.favorites + analysis.loved if f.year]
+            if years:
+                avg_year = sum(years) / len(years)
+                decade_counts: dict[str, int] = {}
+                for year in years:
+                    decade = f"{(year // 10) * 10}s"
+                    decade_counts[decade] = decade_counts.get(decade, 0) + 1
+
+                # Find dominant decades
+                sorted_decades = sorted(decade_counts.items(), key=lambda x: x[1], reverse=True)
+                if sorted_decades and sorted_decades[0][1] >= 5:
+                    top_decade = sorted_decades[0][0]
+                    content = (
+                        f"Prefers films from {top_decade} (avg year of favorites: {int(avg_year)})"
+                    )
+                    existing = await self._storage.search_memory_notes(
+                        user_id, "prefers films from", limit=1
+                    )
+                    if not existing:
+                        note = await self._storage.create_memory_note(
+                            user_id=user_id,
+                            content=content,
+                            source="letterboxd",
+                            keywords=["letterboxd", "year-preference", top_decade],
+                            confidence=0.7,
+                        )
+                        notes.append(note)
+                        logger.info(
+                            "letterboxd_learning",
+                            user_id=user_id,
+                            pattern="year_preference",
+                            decade=top_decade,
+                        )
+
+        # 4. Rating habits analysis
+        if analysis.average_rating and analysis.total_rated >= 20:
+            if analysis.average_rating >= 4.0:
+                rating_style = (
+                    f"Generally generous rater (avg rating {analysis.average_rating:.1f}/5)"
+                )
+            elif analysis.average_rating <= 2.5:
+                rating_style = f"Critical viewer with high standards (avg rating {analysis.average_rating:.1f}/5)"
+            else:
+                rating_style = f"Balanced rating style (avg {analysis.average_rating:.1f}/5)"
+
+            existing = await self._storage.search_memory_notes(user_id, "rating", limit=1)
+            if not existing:
+                note = await self._storage.create_memory_note(
+                    user_id=user_id,
+                    content=rating_style,
+                    source="letterboxd",
+                    keywords=["letterboxd", "rating-style"],
+                    confidence=0.75,
+                )
+                notes.append(note)
+
+        # 5. Total stats summary
+        if analysis.total_watched >= 50:
+            content = f"Avid cinephile: {analysis.total_watched} films watched, {analysis.total_rated} rated on Letterboxd"
+            existing = await self._storage.search_memory_notes(user_id, "cinephile", limit=1)
+            if not existing:
+                note = await self._storage.create_memory_note(
+                    user_id=user_id,
+                    content=content,
+                    source="letterboxd",
+                    keywords=["letterboxd", "stats", "cinephile"],
+                    confidence=0.95,
+                )
+                notes.append(note)
+
+        # 6. Watchlist size (indicates interest in discovery)
+        if analysis.watchlist and len(analysis.watchlist) > 50:
+            content = (
+                f"Large watchlist ({len(analysis.watchlist)} films) - interested in film discovery"
+            )
+            existing = await self._storage.search_memory_notes(user_id, "watchlist", limit=1)
+            if not existing:
+                note = await self._storage.create_memory_note(
+                    user_id=user_id,
+                    content=content,
+                    source="letterboxd",
+                    keywords=["letterboxd", "watchlist", "discovery"],
+                    confidence=0.8,
+                )
+                notes.append(note)
+
+        logger.info(
+            "letterboxd_analysis_complete",
+            user_id=user_id,
+            notes_created=len(notes),
+            total_films=analysis.total_watched,
+        )
         return notes
 
     async def create_manual_learning(

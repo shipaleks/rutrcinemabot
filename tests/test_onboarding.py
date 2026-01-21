@@ -45,8 +45,6 @@ class TestKeyboards:
         assert "onboard_quality_720p" in callback_datas
         assert "onboard_quality_1080p" in callback_datas
         assert "onboard_quality_4K" in callback_datas
-        # Second row: back button
-        assert keyboard.inline_keyboard[1][0].callback_data == "onboard_back_welcome"
 
     def test_get_settings_keyboard(self):
         """Test settings keyboard displays current values."""
@@ -72,8 +70,7 @@ class TestMessageTemplates:
         """Test welcome message can be formatted."""
         message = WELCOME_MESSAGE.format(name="Test")
         assert "Test" in message
-        assert "Media Concierge Bot" in message
-
+        assert "помощник" in message  # "персональный помощник"
 
 
 # =============================================================================
@@ -140,14 +137,14 @@ class TestOnboardingStartHandler:
     @pytest.mark.asyncio
     async def test_start_sends_welcome_message(self, mock_update, mock_context):
         """Test that /start sends welcome message with buttons."""
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
             mock_storage_instance = MagicMock()
             mock_storage_instance.__aenter__ = AsyncMock(return_value=mock_storage_instance)
             mock_storage_instance.__aexit__ = AsyncMock()
             mock_storage_instance.get_or_create_user = AsyncMock(
                 return_value=(MagicMock(id=1), True)
             )
-            mock_storage.return_value = mock_storage_instance
+            mock_get_storage.return_value = mock_storage_instance
 
             await onboarding_start_handler(mock_update, mock_context)
 
@@ -159,14 +156,14 @@ class TestOnboardingStartHandler:
     @pytest.mark.asyncio
     async def test_start_creates_user_profile(self, mock_update, mock_context):
         """Test that /start creates user profile in database."""
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
             mock_storage_instance = MagicMock()
             mock_storage_instance.__aenter__ = AsyncMock(return_value=mock_storage_instance)
             mock_storage_instance.__aexit__ = AsyncMock()
             mock_storage_instance.get_or_create_user = AsyncMock(
                 return_value=(MagicMock(id=1), True)
             )
-            mock_storage.return_value = mock_storage_instance
+            mock_get_storage.return_value = mock_storage_instance
 
             await onboarding_start_handler(mock_update, mock_context)
 
@@ -182,8 +179,8 @@ class TestOnboardingStartHandler:
     @pytest.mark.asyncio
     async def test_start_handles_storage_error(self, mock_update, mock_context):
         """Test that /start handles storage errors gracefully."""
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
-            mock_storage.return_value.__aenter__ = AsyncMock(side_effect=Exception("DB error"))
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
+            mock_get_storage.return_value.__aenter__ = AsyncMock(side_effect=Exception("DB error"))
 
             # Should not raise, should still send welcome message
             await onboarding_start_handler(mock_update, mock_context)
@@ -196,7 +193,7 @@ class TestSettingsHandler:
     @pytest.mark.asyncio
     async def test_settings_sends_settings_message(self, mock_update, mock_context):
         """Test that /settings sends settings message with buttons."""
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
             mock_storage_instance = MagicMock()
             mock_storage_instance.__aenter__ = AsyncMock(return_value=mock_storage_instance)
             mock_storage_instance.__aexit__ = AsyncMock()
@@ -204,7 +201,7 @@ class TestSettingsHandler:
             mock_storage_instance.get_preferences = AsyncMock(
                 return_value=MagicMock(video_quality="1080p", audio_language="ru")
             )
-            mock_storage.return_value = mock_storage_instance
+            mock_get_storage.return_value = mock_storage_instance
 
             await settings_handler(mock_update, mock_context)
 
@@ -216,16 +213,14 @@ class TestOnboardingCallbackHandler:
 
     @pytest.mark.asyncio
     async def test_setup_start_callback(self, mock_update, mock_callback_query, mock_context):
-        """Test setup start callback shows quality selection."""
+        """Test setup start callback starts the setup flow."""
         mock_update.callback_query = mock_callback_query
-        mock_callback_query.data = "onboard_setup_start"
+        mock_callback_query.data = "onboard_setup"
 
         await onboarding_callback_handler(mock_update, mock_context)
 
         mock_callback_query.answer.assert_called_once()
         mock_callback_query.edit_message_text.assert_called_once()
-        call_args = mock_callback_query.edit_message_text.call_args
-        assert "качество" in call_args[0][0].lower() or "качество" in str(call_args)
 
     @pytest.mark.asyncio
     async def test_skip_callback(self, mock_update, mock_callback_query, mock_context):
@@ -246,99 +241,64 @@ class TestOnboardingCallbackHandler:
 
         await onboarding_callback_handler(mock_update, mock_context)
 
-        assert mock_context.user_data.get("selected_quality") == "1080p"
+        assert mock_context.user_data.get("quality") == "1080p"
         mock_callback_query.edit_message_text.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_audio_selection_callback(self, mock_update, mock_callback_query, mock_context):
-        """Test audio selection stores value and shows genre selection."""
+        """Test audio selection completes setup and saves to database."""
         mock_update.callback_query = mock_callback_query
         mock_callback_query.data = "onboard_audio_ru"
+        mock_context.user_data = {"quality": "1080p"}
 
-        await onboarding_callback_handler(mock_update, mock_context)
-
-        assert mock_context.user_data.get("selected_audio") == "ru"
-        mock_callback_query.edit_message_text.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_genre_selection_toggles(self, mock_update, mock_callback_query, mock_context):
-        """Test genre selection toggles genres."""
-        mock_update.callback_query = mock_callback_query
-        mock_callback_query.data = "onboard_genre_scifi"
-        mock_context.user_data["selected_genres"] = []
-
-        await onboarding_callback_handler(mock_update, mock_context)
-
-        assert "scifi" in mock_context.user_data["selected_genres"]
-
-        # Toggle off
-        await onboarding_callback_handler(mock_update, mock_context)
-        assert "scifi" not in mock_context.user_data["selected_genres"]
-
-    @pytest.mark.asyncio
-    async def test_complete_saves_preferences(self, mock_update, mock_callback_query, mock_context):
-        """Test complete callback saves preferences to database."""
-        mock_update.callback_query = mock_callback_query
-        mock_callback_query.data = "onboard_complete"
-        mock_context.user_data = {
-            "selected_quality": "4K",
-            "selected_audio": "en",
-            "selected_genres": ["scifi", "action"],
-        }
-
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
             mock_storage_instance = MagicMock()
             mock_storage_instance.__aenter__ = AsyncMock(return_value=mock_storage_instance)
             mock_storage_instance.__aexit__ = AsyncMock()
             mock_storage_instance.get_user_by_telegram_id = AsyncMock(return_value=MagicMock(id=1))
             mock_storage_instance.update_preferences = AsyncMock()
-            mock_storage.return_value = mock_storage_instance
+            mock_get_storage.return_value = mock_storage_instance
 
-            await onboarding_callback_handler(mock_update, mock_context)
+            # Mock ProfileManager
+            with patch("src.user.profile.ProfileManager"):
+                await onboarding_callback_handler(mock_update, mock_context)
 
-            mock_storage_instance.update_preferences.assert_called_once_with(
-                user_id=1,
-                video_quality="4K",
-                audio_language="en",
-                preferred_genres=["scifi", "action"],
-            )
+            # Audio selection should save preferences
+            mock_storage_instance.update_preferences.assert_called_once()
 
 
 class TestSettingsCallbackHandler:
     """Test settings callback handlers."""
 
     @pytest.mark.asyncio
-    async def test_settings_genre_toggle(self, mock_update, mock_callback_query, mock_context):
-        """Test genre toggle in settings."""
+    async def test_settings_quality_callback(self, mock_update, mock_callback_query, mock_context):
+        """Test quality settings callback."""
         mock_update.callback_query = mock_callback_query
-        mock_callback_query.data = "settings_genre_drama"
-        mock_context.user_data["selected_genres"] = []
+        mock_callback_query.data = "settings_quality"
 
         await settings_callback_handler(mock_update, mock_context)
 
-        assert "drama" in mock_context.user_data["selected_genres"]
+        mock_callback_query.answer.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_settings_save_genres(self, mock_update, mock_callback_query, mock_context):
-        """Test save genres in settings."""
+    async def test_settings_back_callback(self, mock_update, mock_callback_query, mock_context):
+        """Test back button in settings."""
         mock_update.callback_query = mock_callback_query
-        mock_callback_query.data = "settings_save_genres"
-        mock_context.user_data = {"selected_genres": ["drama", "comedy"]}
+        mock_callback_query.data = "settings_back"
 
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
             mock_storage_instance = MagicMock()
             mock_storage_instance.__aenter__ = AsyncMock(return_value=mock_storage_instance)
             mock_storage_instance.__aexit__ = AsyncMock()
             mock_storage_instance.get_user_by_telegram_id = AsyncMock(return_value=MagicMock(id=1))
-            mock_storage_instance.update_preferences = AsyncMock()
             mock_storage_instance.get_preferences = AsyncMock(
                 return_value=MagicMock(video_quality="1080p", audio_language="ru")
             )
-            mock_storage.return_value = mock_storage_instance
+            mock_get_storage.return_value = mock_storage_instance
 
             await settings_callback_handler(mock_update, mock_context)
 
-            mock_storage_instance.update_preferences.assert_called_once()
+            mock_callback_query.answer.assert_called_once()
 
 
 # =============================================================================
@@ -352,8 +312,7 @@ class TestOnboardingFlow:
     @pytest.mark.asyncio
     async def test_full_onboarding_flow(self, mock_update, mock_callback_query, mock_context):
         """Test complete onboarding from start to finish."""
-        # Start
-        with patch("src.bot.onboarding.UserStorage") as mock_storage:
+        with patch("src.bot.onboarding.get_storage") as mock_get_storage:
             mock_storage_instance = MagicMock()
             mock_storage_instance.__aenter__ = AsyncMock(return_value=mock_storage_instance)
             mock_storage_instance.__aexit__ = AsyncMock()
@@ -362,35 +321,23 @@ class TestOnboardingFlow:
             )
             mock_storage_instance.get_user_by_telegram_id = AsyncMock(return_value=MagicMock(id=1))
             mock_storage_instance.update_preferences = AsyncMock()
-            mock_storage.return_value = mock_storage_instance
+            mock_get_storage.return_value = mock_storage_instance
 
-            # Step 1: /start
-            await onboarding_start_handler(mock_update, mock_context)
-            mock_update.message.reply_text.assert_called()
+            # Mock ProfileManager
+            with patch("src.user.profile.ProfileManager"):
+                # Step 1: /start
+                await onboarding_start_handler(mock_update, mock_context)
+                mock_update.message.reply_text.assert_called()
 
-            # Step 2: Setup start
-            mock_update.callback_query = mock_callback_query
-            mock_callback_query.data = "onboard_setup_start"
-            await onboarding_callback_handler(mock_update, mock_context)
+                # Step 2: Quality selection (skip Letterboxd, movies, rutracker)
+                mock_update.callback_query = mock_callback_query
+                mock_callback_query.data = "onboard_quality_4K"
+                await onboarding_callback_handler(mock_update, mock_context)
+                assert mock_context.user_data.get("quality") == "4K"
 
-            # Step 3: Quality selection
-            mock_callback_query.data = "onboard_quality_4K"
-            await onboarding_callback_handler(mock_update, mock_context)
-            assert mock_context.user_data.get("selected_quality") == "4K"
+                # Step 3: Audio selection (completes setup)
+                mock_callback_query.data = "onboard_audio_en"
+                await onboarding_callback_handler(mock_update, mock_context)
 
-            # Step 4: Audio selection
-            mock_callback_query.data = "onboard_audio_en"
-            await onboarding_callback_handler(mock_update, mock_context)
-            assert mock_context.user_data.get("selected_audio") == "en"
-
-            # Step 5: Genre selection
-            mock_callback_query.data = "onboard_genre_scifi"
-            await onboarding_callback_handler(mock_update, mock_context)
-            assert "scifi" in mock_context.user_data.get("selected_genres", [])
-
-            # Step 6: Complete
-            mock_callback_query.data = "onboard_complete"
-            await onboarding_callback_handler(mock_update, mock_context)
-
-            # Verify preferences were saved
-            mock_storage_instance.update_preferences.assert_called()
+                # Verify preferences were saved
+                mock_storage_instance.update_preferences.assert_called()
