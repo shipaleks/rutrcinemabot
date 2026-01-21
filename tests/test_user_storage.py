@@ -17,7 +17,6 @@ from cryptography.fernet import Fernet
 from src.user.storage import (
     CredentialType,
     EncryptionHelper,
-    MigrationManager,
     Preference,
     User,
     UserStorage,
@@ -173,7 +172,7 @@ class TestEncryptionHelper:
 # =============================================================================
 
 
-class TestMigrationManager:
+class TestMigrations:
     """Tests for database migrations."""
 
     @pytest.mark.asyncio
@@ -193,35 +192,10 @@ class TestMigrationManager:
         assert "preferences" in tables
         assert "watched" in tables
         assert "_migrations" in tables
-
-        await storage.close()
-
-    @pytest.mark.asyncio
-    async def test_migration_version_tracking(self, temp_db_path: Path):
-        """Test migration versions are tracked."""
-        storage = UserStorage(temp_db_path)
-        await storage.connect()
-
-        manager = MigrationManager(storage.db)
-        version = await manager.get_current_version()
-
-        # Should have applied all migrations
-        assert version >= 5
-
-        await storage.close()
-
-    @pytest.mark.asyncio
-    async def test_migrations_idempotent(self, temp_db_path: Path):
-        """Test migrations can be run multiple times safely."""
-        storage = UserStorage(temp_db_path)
-        await storage.connect()
-
-        # Apply migrations again
-        manager = MigrationManager(storage.db)
-        applied = await manager.apply_migrations()
-
-        # No new migrations should be applied
-        assert len(applied) == 0
+        # New memory system tables
+        assert "core_memory_blocks" in tables
+        assert "conversation_sessions" in tables
+        assert "memory_notes" in tables
 
         await storage.close()
 

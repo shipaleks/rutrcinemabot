@@ -54,10 +54,16 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 4. **tmdb_credits** — Съёмочная группа: режиссёры, актёры, операторы.
 5. **kinopoisk_search** — Рейтинги Кинопоиска, русские названия.
 
-### Профиль и персонализация
-6. **read_user_profile** — Загрузить профиль пользователя (markdown). ИСПОЛЬЗУЙ В НАЧАЛЕ КАЖДОГО РАЗГОВОРА!
-7. **update_user_profile** — Записать важную информацию о пользователе.
-8. **get_user_profile** — Базовые предпочтения (качество, язык, жанры).
+### Система памяти (Memory System)
+6. **read_core_memory** — Чтение блоков core memory. Core memory ВСЕГДА в контексте.
+7. **update_core_memory** — Обновление блоков памяти (preferences, watch_context, style и т.д.)
+8. **search_memory_notes** — Поиск по recall memory (заметки из прошлых разговоров).
+9. **create_memory_note** — Создание заметки для recall memory.
+
+### Профиль (Legacy)
+10. **read_user_profile** — Загрузить профиль пользователя (markdown).
+11. **update_user_profile** — Записать важную информацию о пользователе.
+12. **get_user_profile** — Базовые предпочтения (качество, язык, жанры).
 
 ### Watchlist и история
 9. **add_to_watchlist** — Добавить в "хочу посмотреть".
@@ -83,9 +89,23 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 ## Алгоритм работы с пользователем
 
 ### 1. В начале разговора
-- Если разговор новый, загрузи профиль через `read_user_profile`.
-- Используй информацию из профиля для персонализации.
-- Обращай внимание на Communication Style и Explicit Instructions.
+- Core Memory уже загружена в контекст (см. ниже "## Core Memory").
+- Если нужна дополнительная информация, используй `search_memory_notes`.
+- Обращай внимание на блоки `style` и `instructions`.
+
+### Работа с памятью
+**КОГДА обновлять core memory:**
+- Явная просьба: "Запомни, что я ненавижу хорроры"
+- Значительное изменение: "Купил 4K телевизор"
+- Активный контекст: "Начал смотреть Breaking Bad"
+
+**КОГДА НЕ обновлять:**
+- Одноразовые предпочтения: "сегодня хочу комедию"
+- Уже сохранённая информация (сначала проверь через `read_core_memory`)
+- Временный контекст без значения
+
+**ВАЖНО для instructions/blocklist:**
+- ВСЕГДА спрашивай подтверждение: "Запомнить это как постоянное правило?"
 
 ### 2. При поиске контента
 1. Получи предпочтения пользователя (качество, язык).
@@ -196,6 +216,7 @@ def get_system_prompt(
     user_preferences: dict[str, Any] | None = None,
     user_profile_md: str | None = None,
     blocklist_items: list[dict[str, str]] | None = None,
+    core_memory_content: str | None = None,
 ) -> str:
     """Get the system prompt with optional user context.
 
@@ -204,8 +225,9 @@ def get_system_prompt(
             - quality: "1080p", "4K", "720p" etc.
             - audio_language: "ru", "en", "original" etc.
             - genres: list of preferred genres
-        user_profile_md: Full markdown profile (from read_user_profile tool)
+        user_profile_md: Full markdown profile (from read_user_profile tool) - LEGACY
         blocklist_items: List of blocked items for strict filtering
+        core_memory_content: Rendered core memory blocks (new memory system)
 
     Returns:
         Complete system prompt with user context appended.
@@ -214,12 +236,17 @@ def get_system_prompt(
 
     context_parts: list[str] = []
 
-    # Add user profile if available
-    if user_profile_md:
+    # Add core memory blocks (new system - takes priority)
+    if core_memory_content:
+        context_parts.append("\n\n---\n\n")
+        context_parts.append(core_memory_content)
+
+    # Add user profile if available (legacy fallback)
+    elif user_profile_md:
         context_parts.append("\n\n---\n\n## Профиль пользователя\n")
         context_parts.append(user_profile_md)
 
-    # Add basic preferences if profile not available
+    # Add basic preferences if nothing else available
     elif user_preferences:
         context_parts.append("\n\n---\n\n## Базовые предпочтения пользователя:")
 
