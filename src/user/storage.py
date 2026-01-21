@@ -1650,7 +1650,9 @@ class SQLiteStorage(BaseStorage):
             excluded_genres=json.loads(row["excluded_genres"] or "[]"),
             auto_download=bool(row["auto_download"]),
             notification_enabled=bool(row["notification_enabled"]),
-            claude_model=row["claude_model"] if "claude_model" in row.keys() else "claude-sonnet-4-5-20250929",
+            claude_model=row["claude_model"]
+            if "claude_model" in row.keys()
+            else "claude-sonnet-4-5-20250929",
             thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -3477,7 +3479,9 @@ class PostgresStorage(BaseStorage):
             excluded_genres=excluded or [],
             auto_download=row["auto_download"],
             notification_enabled=row["notification_enabled"],
-            claude_model=row["claude_model"] if "claude_model" in row.keys() else "claude-sonnet-4-5-20250929",
+            claude_model=row["claude_model"]
+            if "claude_model" in row.keys()
+            else "claude-sonnet-4-5-20250929",
             thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
             created_at=row["created_at"],
             updated_at=row["updated_at"],

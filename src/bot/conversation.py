@@ -1871,7 +1871,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         genres=preferences.preferred_genres,
                     )
 
-                # Load user profile for Claude's context
+                # Load user profile for Claude's context (legacy)
                 profile_manager = ProfileManager(storage)
                 conv_context.user_profile_md = await profile_manager.get_or_create_profile(
                     db_user.id, user=db_user, preferences=preferences
@@ -1883,6 +1883,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     if conv_context.user_profile_md
                     else 0,
                 )
+
+                # Load core memory blocks (new MemGPT-style system)
+                from src.user.memory import CoreMemoryManager, migrate_profile_to_core_memory
+
+                memory_manager = CoreMemoryManager(storage)
+                blocks = await memory_manager.get_all_blocks(db_user.id)
+
+                # Migrate old profile to core memory if blocks are empty
+                if not blocks or all(not b.content for b in blocks):
+                    if conv_context.user_profile_md:
+                        logger.info(
+                            "migrating_profile_to_core_memory",
+                            user_id=user.id,
+                        )
+                        blocks = await migrate_profile_to_core_memory(
+                            storage, db_user.id, conv_context.user_profile_md
+                        )
+
+                # Render core memory for Claude's context
+                if blocks:
+                    conv_context.core_memory_content = memory_manager.render_blocks_for_context(
+                        blocks
+                    )
+                    logger.debug(
+                        "core_memory_loaded",
+                        user_id=user.id,
+                        blocks_count=len(blocks),
+                        content_length=len(conv_context.core_memory_content or ""),
+                    )
     except Exception as e:
         logger.warning("failed_to_load_preferences", error=str(e))
 

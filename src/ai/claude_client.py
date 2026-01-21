@@ -71,7 +71,8 @@ class ConversationContext:
     Attributes:
         messages: List of messages in the conversation
         user_preferences: User's preferences for personalization
-        user_profile_md: Full markdown profile for Claude's context
+        user_profile_md: Full markdown profile for Claude's context (legacy)
+        core_memory_content: Rendered core memory blocks (new MemGPT-style)
         telegram_user_id: Telegram user ID for tool calls
         max_history: Maximum number of messages to keep
     """
@@ -79,6 +80,7 @@ class ConversationContext:
     messages: list[Message] = field(default_factory=list)
     user_preferences: dict[str, Any] | None = None
     user_profile_md: str | None = None
+    core_memory_content: str | None = None
     telegram_user_id: int | None = None
     max_history: int = 20
 
@@ -174,6 +176,7 @@ class ClaudeClient:
         system_prompt = get_system_prompt(
             user_preferences=context.user_preferences,
             user_profile_md=context.user_profile_md,
+            core_memory_content=context.core_memory_content,
         )
 
         # Prepare API call parameters
@@ -388,6 +391,7 @@ class ClaudeClient:
         system_prompt = get_system_prompt(
             user_preferences=context.user_preferences,
             user_profile_md=context.user_profile_md,
+            core_memory_content=context.core_memory_content,
         )
 
         # Prepare API call parameters

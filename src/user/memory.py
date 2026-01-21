@@ -127,6 +127,41 @@ class CoreMemoryManager:
         """
         return await self._storage.get_core_memory_block(user_id, block_name)
 
+    def render_blocks_for_context(self, blocks: list[CoreMemoryBlock]) -> str:
+        """Render memory blocks as markdown for Claude's context.
+
+        Args:
+            blocks: List of core memory blocks
+
+        Returns:
+            Markdown-formatted string for system prompt
+        """
+        if not blocks:
+            return ""
+
+        sections = ["## Core Memory (User Profile)\n"]
+
+        # Map block names to display titles
+        block_titles = {
+            "identity": "Identity",
+            "preferences": "Preferences",
+            "watch_context": "Watch Context",
+            "active_context": "Active Context",
+            "style": "Communication Style",
+            "instructions": "User Instructions",
+            "blocklist": "Blocklist",
+            "learnings": "Learned Patterns",
+        }
+
+        for block in blocks:
+            if not block.content:
+                continue
+
+            title = block_titles.get(block.block_name, block.block_name.title())
+            sections.append(f"### {title}\n{block.content}\n")
+
+        return "\n".join(sections)
+
     async def update_block(
         self,
         user_id: int,
