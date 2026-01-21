@@ -1384,6 +1384,48 @@ async def handle_get_blocklist(tool_input: dict[str, Any]) -> str:
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
+async def _sync_monitors_to_memory(storage: Any, user_id: int) -> None:
+    """Sync active monitors to user's active_context memory block.
+
+    Updates the active_context block with a summary of what the user is waiting for,
+    helping Claude understand the user's current focus.
+
+    Args:
+        storage: Storage instance (BaseStorage or subclass)
+        user_id: Internal user ID
+    """
+    from src.user.memory import CoreMemoryManager
+
+    try:
+        # Get active monitors
+        monitors = await storage.get_monitors(user_id=user_id, status="active")
+
+        if not monitors:
+            return
+
+        # Build summary text
+        waiting_for = []
+        for m in monitors[:5]:  # Limit to 5 most recent
+            media_emoji = "📺" if m.media_type == "tv" else "🎬"
+            waiting_for.append(f"{media_emoji} {m.title} ({m.quality})")
+
+        if waiting_for:
+            content = "Waiting for releases:\n" + "\n".join(waiting_for)
+
+            # Update active_context block
+            memory_manager = CoreMemoryManager(storage)
+            await memory_manager.update_block(
+                user_id=user_id,
+                block_name="active_context",
+                content=content,
+                operation="replace",
+            )
+            logger.debug("monitors_synced_to_memory", user_id=user_id, count=len(waiting_for))
+
+    except Exception as e:
+        logger.warning("sync_monitors_to_memory_error", user_id=user_id, error=str(e))
+
+
 async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
     """Handle create_monitor tool call."""
     user_id = tool_input.get("user_id")
@@ -1411,6 +1453,12 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
                 quality=quality,
                 auto_download=auto_download,
             )
+
+            # Sync to active_context memory block
+            try:
+                await _sync_monitors_to_memory(storage, user_id)
+            except Exception as e:
+                logger.warning("sync_monitors_to_memory_failed", error=str(e))
 
             return json.dumps(
                 {
@@ -1479,9 +1527,20 @@ async def handle_cancel_monitor(tool_input: dict[str, Any]) -> str:
 
     try:
         async with get_storage() as storage:
+            # Get monitor before deletion to know user_id
+            monitor = await storage.get_monitor(monitor_id)
+            user_id = monitor.user_id if monitor else None
+
             deleted = await storage.delete_monitor(monitor_id)
 
             if deleted:
+                # Sync to memory after deletion
+                if user_id:
+                    try:
+                        await _sync_monitors_to_memory(storage, user_id)
+                    except Exception as e:
+                        logger.warning("sync_monitors_to_memory_failed", error=str(e))
+
                 return json.dumps(
                     {"status": "success", "message": "Мониторинг отменён"}, ensure_ascii=False
                 )

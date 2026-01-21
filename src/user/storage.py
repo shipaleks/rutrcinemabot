@@ -3477,8 +3477,8 @@ class PostgresStorage(BaseStorage):
             excluded_genres=excluded or [],
             auto_download=row["auto_download"],
             notification_enabled=row["notification_enabled"],
-            claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
-            thinking_budget=row.get("thinking_budget", 0),
+            claude_model=row["claude_model"] if "claude_model" in row.keys() else "claude-sonnet-4-5-20250929",
+            thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

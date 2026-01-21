@@ -610,6 +610,25 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
                     watchlist_saved=watchlist_saved,
                 )
 
+                # Extract learnings from Letterboxd data
+                try:
+                    from src.user.memory import LearningDetector
+
+                    detector = LearningDetector(storage)
+                    learnings = await detector.analyze_letterboxd_data(db_user.id, analysis)
+                    if learnings:
+                        logger.info(
+                            "letterboxd_learnings_extracted",
+                            user_id=user.id,
+                            learnings_count=len(learnings),
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "letterboxd_learning_detection_error",
+                        user_id=user.id,
+                        error=str(e),
+                    )
+
         # Store stats for completion message
         if context.user_data is not None:
             context.user_data["letterboxd_stats"] = (

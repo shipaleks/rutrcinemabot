@@ -37,6 +37,10 @@ DEFAULT_CHECK_INTERVAL_HOURS = 6
 # Scheduler runs every 2 hours to check which monitors need updating
 SCHEDULER_RUN_INTERVAL_HOURS = 2
 
+# Memory maintenance intervals
+MEMORY_ARCHIVAL_INTERVAL_HOURS = 24  # Run once daily
+LEARNING_DETECTION_INTERVAL_HOURS = 12  # Run twice daily
+
 
 def get_check_interval_hours(release_date: datetime | None) -> int:
     """Calculate check interval based on expected release date.
@@ -56,16 +60,16 @@ def get_check_interval_hours(release_date: datetime | None) -> int:
 
     days_until = (release_date - now).days
 
-    if days_until <= 0:      # Already released — check frequently
+    if days_until <= 0:  # Already released — check frequently
         return 2
-    elif days_until <= 7:    # Within a week
+    if days_until <= 7:  # Within a week
         return 4
-    elif days_until <= 30:   # Within a month
+    if days_until <= 30:  # Within a month
         return 12
-    elif days_until <= 90:   # Within 3 months
+    if days_until <= 90:  # Within 3 months
         return 24
-    else:                    # Far future
-        return 72
+    # Far future
+    return 72
 
 
 def should_check_monitor(monitor: Monitor) -> bool:
@@ -150,6 +154,26 @@ class MonitoringScheduler:
             name="Release Monitoring Check",
             replace_existing=True,
             max_instances=1,  # Prevent overlapping runs
+        )
+
+        # Add memory archival job - runs once daily
+        self._scheduler.add_job(
+            self._run_memory_archival,
+            trigger=IntervalTrigger(hours=MEMORY_ARCHIVAL_INTERVAL_HOURS),
+            id="memory_archival",
+            name="Memory Archival",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add learning detection job - runs twice daily
+        self._scheduler.add_job(
+            self._run_learning_detection,
+            trigger=IntervalTrigger(hours=LEARNING_DETECTION_INTERVAL_HOURS),
+            id="learning_detection",
+            name="Learning Detection",
+            replace_existing=True,
+            max_instances=1,
         )
 
         self._scheduler.start()
@@ -252,6 +276,16 @@ class MonitoringScheduler:
                         if monitor and monitor.auto_download:
                             await self._auto_download(release)
 
+                        # Sync monitors to memory (update active_context)
+                        try:
+                            await self._sync_monitors_to_memory(storage, release.user_id)
+                        except Exception as e:
+                            logger.warning(
+                                "sync_monitors_to_memory_failed",
+                                user_id=release.user_id,
+                                error=str(e),
+                            )
+
         except Exception as e:
             logger.exception("monitoring_check_failed", error=str(e))
 
@@ -261,6 +295,116 @@ class MonitoringScheduler:
         )
 
         return found_releases
+
+    async def _run_memory_archival(self) -> None:
+        """Run periodic memory archival for all users.
+
+        Archives old, low-access memory notes to prevent unbounded growth.
+        """
+        logger.info("memory_archival_started")
+
+        try:
+            from src.user.memory import MemoryArchiver
+
+            async with get_storage() as storage:
+                archiver = MemoryArchiver(storage)
+                results = await archiver.run_archival_for_all_users()
+
+                total_archived = sum(results.values())
+                if total_archived > 0:
+                    logger.info(
+                        "memory_archival_completed",
+                        users_affected=len(results),
+                        total_archived=total_archived,
+                    )
+                else:
+                    logger.debug("memory_archival_completed_nothing_to_archive")
+
+        except Exception as e:
+            logger.exception("memory_archival_failed", error=str(e))
+
+    async def _sync_monitors_to_memory(self, storage: Any, user_id: int) -> None:
+        """Sync active monitors to user's active_context memory block.
+
+        Args:
+            storage: Storage instance
+            user_id: Internal user ID
+        """
+        from src.user.memory import CoreMemoryManager
+
+        try:
+            # Get active monitors
+            monitors = await storage.get_monitors(user_id=user_id, status="active")
+
+            if not monitors:
+                # Clear active_context if no monitors
+                memory_manager = CoreMemoryManager(storage)
+                await memory_manager.update_block(
+                    user_id=user_id,
+                    block_name="active_context",
+                    content="",
+                    operation="replace",
+                )
+                return
+
+            # Build summary text
+            waiting_for = []
+            for m in monitors[:5]:  # Limit to 5 most recent
+                media_emoji = "📺" if m.media_type == "tv" else "🎬"
+                waiting_for.append(f"{media_emoji} {m.title} ({m.quality})")
+
+            content = "Waiting for releases:\n" + "\n".join(waiting_for)
+
+            # Update active_context block
+            memory_manager = CoreMemoryManager(storage)
+            await memory_manager.update_block(
+                user_id=user_id,
+                block_name="active_context",
+                content=content,
+                operation="replace",
+            )
+            logger.debug("monitors_synced_to_memory", user_id=user_id, count=len(waiting_for))
+
+        except Exception as e:
+            logger.warning("sync_monitors_to_memory_error", user_id=user_id, error=str(e))
+
+    async def _run_learning_detection(self) -> None:
+        """Run periodic learning detection for all users.
+
+        Analyzes user ratings and behavior to extract patterns.
+        """
+        logger.info("learning_detection_started")
+
+        try:
+            from src.user.memory import LearningDetector
+
+            async with get_storage() as storage:
+                users = await storage.get_all_users(limit=1000)
+                total_learnings = 0
+
+                for user in users:
+                    try:
+                        detector = LearningDetector(storage)
+                        notes = await detector.analyze_ratings(user.id)
+                        total_learnings += len(notes)
+                    except Exception as e:
+                        logger.warning(
+                            "learning_detection_user_failed",
+                            user_id=user.id,
+                            error=str(e),
+                        )
+
+                if total_learnings > 0:
+                    logger.info(
+                        "learning_detection_completed",
+                        users_processed=len(users),
+                        learnings_created=total_learnings,
+                    )
+                else:
+                    logger.debug("learning_detection_completed_no_new_learnings")
+
+        except Exception as e:
+            logger.exception("learning_detection_failed", error=str(e))
 
     async def _notify_user(
         self,
