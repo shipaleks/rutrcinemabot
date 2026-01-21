@@ -767,6 +767,268 @@ async def handle_update_user_profile(tool_input: dict[str, Any]) -> str:
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
+# =============================================================================
+# Memory System Tool Handlers (MemGPT-style)
+# =============================================================================
+
+
+async def handle_read_core_memory(tool_input: dict[str, Any]) -> str:
+    """Handle read_core_memory tool call.
+
+    Args:
+        tool_input: Tool parameters (user_id, block_name optional).
+
+    Returns:
+        JSON string with core memory blocks.
+    """
+    from src.user.memory import CoreMemoryManager
+
+    user_id_input = tool_input.get("user_id")
+    block_name = tool_input.get("block_name")
+
+    if user_id_input is None:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
+
+    logger.info("read_core_memory", user_id=user_id, block_name=block_name)
+
+    try:
+        async with get_storage() as storage:
+            manager = CoreMemoryManager(storage)
+
+            if block_name:
+                block = await manager.get_block(user_id, block_name)
+                if block is None:
+                    return json.dumps(
+                        {"status": "not_found", "error": f"Block '{block_name}' not found"},
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "block": {
+                            "name": block.block_name,
+                            "content": block.content,
+                            "max_chars": block.max_chars,
+                            "usage_percent": block.usage_percent,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            blocks = await manager.get_all_blocks(user_id)
+            return json.dumps(
+                {
+                    "status": "success",
+                    "blocks": [
+                        {
+                            "name": b.block_name,
+                            "content": b.content,
+                            "max_chars": b.max_chars,
+                            "usage_percent": b.usage_percent,
+                        }
+                        for b in blocks
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("read_core_memory_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_update_core_memory(tool_input: dict[str, Any]) -> str:
+    """Handle update_core_memory tool call.
+
+    Args:
+        tool_input: Tool parameters (user_id, block_name, content, operation).
+
+    Returns:
+        JSON string with update status.
+    """
+    from src.user.memory import CoreMemoryManager
+    from src.user.storage import CORE_MEMORY_BLOCKS
+
+    user_id_input = tool_input.get("user_id")
+    block_name = tool_input.get("block_name")
+    content = tool_input.get("content")
+    operation = tool_input.get("operation", "replace")
+
+    if not all([user_id_input, block_name, content]):
+        return json.dumps(
+            {"status": "error", "error": "user_id, block_name, and content are required"},
+            ensure_ascii=False,
+        )
+
+    # Check if block is agent-editable
+    block_config = CORE_MEMORY_BLOCKS.get(block_name)
+    if not block_config:
+        return json.dumps(
+            {"status": "error", "error": f"Unknown block: {block_name}"},
+            ensure_ascii=False,
+        )
+
+    if not block_config.get("agent_editable", False):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": f"Block '{block_name}' is system-managed and cannot be updated by agent",
+            },
+            ensure_ascii=False,
+        )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
+
+    logger.info(
+        "update_core_memory",
+        user_id=user_id,
+        block_name=block_name,
+        operation=operation,
+        content_len=len(content),
+    )
+
+    try:
+        async with get_storage() as storage:
+            manager = CoreMemoryManager(storage)
+            block = await manager.update_block(user_id, block_name, content, operation)
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "block": {
+                        "name": block.block_name,
+                        "content": block.content,
+                        "max_chars": block.max_chars,
+                        "usage_percent": block.usage_percent,
+                    },
+                    "message": f"Block '{block_name}' updated successfully",
+                },
+                ensure_ascii=False,
+            )
+
+    except ValueError as e:
+        logger.warning("update_core_memory_invalid", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("update_core_memory_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_search_memory_notes(tool_input: dict[str, Any]) -> str:
+    """Handle search_memory_notes tool call.
+
+    Args:
+        tool_input: Tool parameters (user_id, query, limit).
+
+    Returns:
+        JSON string with search results.
+    """
+    user_id_input = tool_input.get("user_id")
+    query = tool_input.get("query")
+    limit = tool_input.get("limit", 10)
+
+    if not user_id_input or not query:
+        return json.dumps(
+            {"status": "error", "error": "user_id and query are required"},
+            ensure_ascii=False,
+        )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
+
+    logger.info("search_memory_notes", user_id=user_id, query=query, limit=limit)
+
+    try:
+        async with get_storage() as storage:
+            notes = await storage.search_memory_notes(user_id, query, limit)
+
+            # Update access counts for found notes
+            for note in notes:
+                await storage.update_memory_note_access(note.id)
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "count": len(notes),
+                    "notes": [
+                        {
+                            "id": n.id,
+                            "content": n.content,
+                            "source": n.source,
+                            "keywords": n.keywords,
+                            "confidence": n.confidence,
+                            "created_at": n.created_at.isoformat(),
+                        }
+                        for n in notes
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("search_memory_notes_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_create_memory_note(tool_input: dict[str, Any]) -> str:
+    """Handle create_memory_note tool call.
+
+    Args:
+        tool_input: Tool parameters (user_id, content, keywords).
+
+    Returns:
+        JSON string with created note.
+    """
+    user_id_input = tool_input.get("user_id")
+    content = tool_input.get("content")
+    keywords = tool_input.get("keywords", [])
+
+    if not user_id_input or not content:
+        return json.dumps(
+            {"status": "error", "error": "user_id and content are required"},
+            ensure_ascii=False,
+        )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
+
+    logger.info("create_memory_note", user_id=user_id, content_len=len(content))
+
+    try:
+        async with get_storage() as storage:
+            note = await storage.create_memory_note(
+                user_id=user_id,
+                content=content,
+                source="conversation",
+                keywords=keywords,
+                confidence=0.6,  # Default confidence for conversation-based notes
+            )
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "note": {
+                        "id": note.id,
+                        "content": note.content,
+                        "keywords": note.keywords,
+                    },
+                    "message": "Memory note created successfully",
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("create_memory_note_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
 async def handle_add_to_watchlist(tool_input: dict[str, Any]) -> str:
     """Handle add_to_watchlist tool call."""
     user_id_input = tool_input.get("user_id")
@@ -1357,10 +1619,15 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "tmdb_search": handle_tmdb_search,
             "tmdb_credits": handle_tmdb_credits,
             "kinopoisk_search": handle_kinopoisk_search,
-            # User profile tools
+            # User profile tools (legacy)
             "get_user_profile": handle_get_user_profile,
             "read_user_profile": handle_read_user_profile,
             "update_user_profile": handle_update_user_profile,
+            # Memory system tools (MemGPT-style)
+            "read_core_memory": handle_read_core_memory,
+            "update_core_memory": handle_update_core_memory,
+            "search_memory_notes": handle_search_memory_notes,
+            "create_memory_note": handle_create_memory_note,
             # Download tools
             "seedbox_download": handle_seedbox_download,
             # Watchlist tools

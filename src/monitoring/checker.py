@@ -16,6 +16,7 @@ import structlog
 
 from src.search.piratebay import PirateBayClient, PirateBayError
 from src.search.rutracker import RutrackerClient, RutrackerError
+from src.search.torapi import TorAPIClient, TorAPIProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -94,12 +95,17 @@ class ReleaseChecker:
             monitor_id=monitor.id,
             title=monitor.title,
             quality=monitor.quality,
+            media_type=monitor.media_type,
         )
+
+        # Determine category based on media_type
+        category = "tv_show" if monitor.media_type == "tv" else "movie"
 
         # Try Rutracker first
         result = await self._search_rutracker(
             monitor.title,
             monitor.quality,
+            category=category,
         )
 
         if result:
@@ -140,18 +146,52 @@ class ReleaseChecker:
         self,
         title: str,
         quality: str,
+        category: str = "movie",
     ) -> dict[str, Any] | None:
         """Search Rutracker for a release.
+
+        Tries TorAPI first (more reliable), then falls back to direct scraping.
 
         Args:
             title: Title to search for
             quality: Desired quality (1080p, 4K, etc.)
+            category: Content category (movie, tv_show)
 
         Returns:
             Best matching result or None
         """
         await self._rate_limit()
 
+        # Try TorAPI first (more reliable, no auth needed)
+        try:
+            async with TorAPIClient() as torapi:
+                results = await torapi.search(title, TorAPIProvider.RUTRACKER, quality)
+
+                if results:
+                    # Filter by seeds
+                    valid_results = [r for r in results if r.seeds >= self._min_seeds]
+
+                    if valid_results:
+                        best = max(valid_results, key=lambda r: r.seeds)
+
+                        logger.info(
+                            "torapi_monitor_match_found",
+                            title=title,
+                            torrent_title=best.name,
+                            seeds=best.seeds,
+                        )
+
+                        return {
+                            "title": best.name,
+                            "size": best.size,
+                            "seeds": best.seeds,
+                            "quality": best.quality,
+                            "magnet": best.magnet,
+                        }
+        except Exception as e:
+            logger.warning("torapi_search_error", title=title, error=str(e))
+
+        # Fallback to direct Rutracker client
         try:
             async with RutrackerClient(
                 username=self._rutracker_username,
@@ -160,7 +200,7 @@ class ReleaseChecker:
                 results = await client.search(
                     title,
                     quality=quality,
-                    category="movie",
+                    category=category,
                 )
 
                 if not results:
@@ -181,7 +221,7 @@ class ReleaseChecker:
                 best = max(valid_results, key=lambda r: r.seeds)
 
                 logger.info(
-                    "rutracker_match_found",
+                    "rutracker_monitor_match_found",
                     title=title,
                     torrent_title=best.title,
                     seeds=best.seeds,

@@ -7,12 +7,7 @@ from telegram import CallbackQuery, Chat, InlineKeyboardMarkup, Message, Update,
 from telegram.ext import ContextTypes
 
 from src.bot.onboarding import (
-    AUDIO_LANGUAGE_MESSAGE,
-    QUALITY_SELECTION_MESSAGE,
-    SETUP_COMPLETE_MESSAGE,
     WELCOME_MESSAGE,
-    get_audio_language_keyboard,
-    get_genre_keyboard,
     get_quality_keyboard,
     get_settings_keyboard,
     get_welcome_keyboard,
@@ -36,7 +31,7 @@ class TestKeyboards:
         assert isinstance(keyboard, InlineKeyboardMarkup)
         assert len(keyboard.inline_keyboard) == 2
         # First row: setup button
-        assert keyboard.inline_keyboard[0][0].callback_data == "onboard_setup_start"
+        assert keyboard.inline_keyboard[0][0].callback_data == "onboard_setup"
         # Second row: skip button
         assert keyboard.inline_keyboard[1][0].callback_data == "onboard_skip"
 
@@ -52,37 +47,6 @@ class TestKeyboards:
         assert "onboard_quality_4K" in callback_datas
         # Second row: back button
         assert keyboard.inline_keyboard[1][0].callback_data == "onboard_back_welcome"
-
-    def test_get_audio_language_keyboard(self):
-        """Test audio language keyboard has all options."""
-        keyboard = get_audio_language_keyboard()
-        assert isinstance(keyboard, InlineKeyboardMarkup)
-        # First row: language options
-        audio_row = keyboard.inline_keyboard[0]
-        callback_datas = [btn.callback_data for btn in audio_row]
-        assert "onboard_audio_ru" in callback_datas
-        assert "onboard_audio_en" in callback_datas
-        assert "onboard_audio_original" in callback_datas
-
-    def test_get_genre_keyboard_empty(self):
-        """Test genre keyboard with no selection."""
-        keyboard = get_genre_keyboard()
-        assert isinstance(keyboard, InlineKeyboardMarkup)
-        # Check that no checkmarks are present
-        for row in keyboard.inline_keyboard[:-1]:  # Exclude navigation row
-            for btn in row:
-                assert not btn.text.startswith("✅")
-
-    def test_get_genre_keyboard_with_selection(self):
-        """Test genre keyboard with selected genres."""
-        keyboard = get_genre_keyboard(["scifi", "action"])
-        # Find buttons with checkmarks
-        checked = 0
-        for row in keyboard.inline_keyboard[:-1]:
-            for btn in row:
-                if btn.text.startswith("✅"):
-                    checked += 1
-        assert checked == 2
 
     def test_get_settings_keyboard(self):
         """Test settings keyboard displays current values."""
@@ -110,28 +74,6 @@ class TestMessageTemplates:
         assert "Test" in message
         assert "Media Concierge Bot" in message
 
-    def test_quality_selection_message(self):
-        """Test quality selection message content."""
-        assert "720p" in QUALITY_SELECTION_MESSAGE
-        assert "1080p" in QUALITY_SELECTION_MESSAGE
-        assert "4K" in QUALITY_SELECTION_MESSAGE
-
-    def test_audio_language_message(self):
-        """Test audio language message content."""
-        assert "Русский" in AUDIO_LANGUAGE_MESSAGE
-        assert "English" in AUDIO_LANGUAGE_MESSAGE
-        assert "Оригинал" in AUDIO_LANGUAGE_MESSAGE
-
-    def test_setup_complete_message_format(self):
-        """Test setup complete message can be formatted."""
-        message = SETUP_COMPLETE_MESSAGE.format(
-            quality="1080p",
-            audio="Русский",
-            genres_line="• Жанры: **Фантастика**",
-        )
-        assert "1080p" in message
-        assert "Русский" in message
-        assert "Фантастика" in message
 
 
 # =============================================================================

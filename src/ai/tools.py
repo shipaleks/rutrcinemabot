@@ -650,6 +650,159 @@ LETTERBOXD_SYNC_TOOL = {
 
 
 # =============================================================================
+# Memory System Tools (MemGPT-style)
+# =============================================================================
+
+READ_CORE_MEMORY_TOOL = {
+    "name": "read_core_memory",
+    "description": (
+        "Чтение core memory блоков пользователя. Core memory — это структурированная память, "
+        "которая всегда доступна в контексте разговора. Блоки:\n"
+        "- identity: базовая информация (имя, язык, дата регистрации)\n"
+        "- preferences: предпочтения по контенту (качество, язык, жанры)\n"
+        "- watch_context: контекст просмотра (оборудование, с кем смотрит)\n"
+        "- active_context: текущий контекст (что сейчас смотрит, планы)\n"
+        "- style: стиль общения\n"
+        "- instructions: явные инструкции пользователя\n"
+        "- blocklist: что не рекомендовать\n"
+        "- learnings: автоматически выявленные паттерны\n\n"
+        "Используй этот инструмент, чтобы проверить, что уже известно о пользователе, "
+        "ПЕРЕД добавлением новой информации."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "Internal user ID",
+            },
+            "block_name": {
+                "type": "string",
+                "description": "Конкретный блок для чтения. Если не указан, возвращает все блоки.",
+                "enum": [
+                    "identity",
+                    "preferences",
+                    "watch_context",
+                    "active_context",
+                    "style",
+                    "instructions",
+                    "blocklist",
+                    "learnings",
+                ],
+            },
+        },
+        "required": ["user_id"],
+    },
+}
+
+UPDATE_CORE_MEMORY_TOOL = {
+    "name": "update_core_memory",
+    "description": (
+        "Обновление блока core memory пользователя.\n\n"
+        "КОГДА обновлять:\n"
+        "- Явная просьба: 'Запомни, что я ненавижу хорроры'\n"
+        "- Значительное изменение: 'Купил 4K телевизор'\n"
+        "- Активный контекст: 'Начал смотреть Breaking Bad'\n\n"
+        "КОГДА НЕ обновлять:\n"
+        "- Одноразовые предпочтения: 'сегодня хочу комедию'\n"
+        "- Уже сохранённая информация (сначала проверь через read_core_memory)\n"
+        "- Временный контекст без значения\n\n"
+        "ВАЖНО: Для блоков instructions и blocklist СПРОСИ подтверждение: "
+        "'Запомнить это как постоянное правило?'"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "Internal user ID",
+            },
+            "block_name": {
+                "type": "string",
+                "description": "Блок для обновления",
+                "enum": [
+                    "preferences",
+                    "watch_context",
+                    "active_context",
+                    "style",
+                    "instructions",
+                    "blocklist",
+                ],
+            },
+            "content": {
+                "type": "string",
+                "description": "Новое содержимое блока",
+            },
+            "operation": {
+                "type": "string",
+                "description": "Тип операции: replace (заменить), append (добавить), merge (объединить без дублей)",
+                "enum": ["replace", "append", "merge"],
+                "default": "replace",
+            },
+        },
+        "required": ["user_id", "block_name", "content"],
+    },
+}
+
+SEARCH_MEMORY_NOTES_TOOL = {
+    "name": "search_memory_notes",
+    "description": (
+        "Поиск по recall memory — заметкам из прошлых разговоров, "
+        "импортированным данным Letterboxd, выявленным паттернам. "
+        "Используй для поиска информации, которая могла быть упомянута ранее."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "Internal user ID",
+            },
+            "query": {
+                "type": "string",
+                "description": "Поисковый запрос (по ключевым словам или содержимому)",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Максимум результатов",
+                "default": 10,
+            },
+        },
+        "required": ["user_id", "query"],
+    },
+}
+
+CREATE_MEMORY_NOTE_TOOL = {
+    "name": "create_memory_note",
+    "description": (
+        "Создание заметки в recall memory. Используй для сохранения важной информации "
+        "из разговора, которая не подходит для core memory блоков.\n"
+        "Примеры: 'Упоминал, что смотрит фильмы с женой по выходным', "
+        "'Любит фильмы про путешествия во времени'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "Internal user ID",
+            },
+            "content": {
+                "type": "string",
+                "description": "Содержимое заметки",
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Ключевые слова для поиска",
+            },
+        },
+        "required": ["user_id", "content"],
+    },
+}
+
+
+# =============================================================================
 # Collection of all tools
 # =============================================================================
 
@@ -664,6 +817,11 @@ ALL_TOOLS: list[dict[str, Any]] = [
     GET_USER_PROFILE_TOOL,
     READ_USER_PROFILE_TOOL,
     UPDATE_USER_PROFILE_TOOL,
+    # Memory system tools
+    READ_CORE_MEMORY_TOOL,
+    UPDATE_CORE_MEMORY_TOOL,
+    SEARCH_MEMORY_NOTES_TOOL,
+    CREATE_MEMORY_NOTE_TOOL,
     # Download tools
     SEEDBOX_DOWNLOAD_TOOL,
     # Watchlist tools

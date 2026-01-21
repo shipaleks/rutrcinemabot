@@ -202,6 +202,74 @@ class BlocklistItem(BaseModel):
     created_at: datetime
 
 
+class CoreMemoryBlock(BaseModel):
+    """Core memory block for structured user profile.
+
+    Implements MemGPT-style memory hierarchy with character limits.
+    """
+
+    id: int
+    user_id: int
+    block_name: str  # identity, preferences, watch_context, active_context, style, instructions, blocklist, learnings
+    content: str = ""
+    max_chars: int = 500
+    updated_at: datetime
+
+    @property
+    def usage_percent(self) -> float:
+        """Calculate block usage percentage."""
+        if self.max_chars == 0:
+            return 0.0
+        return len(self.content) / self.max_chars * 100
+
+
+class ConversationSession(BaseModel):
+    """Conversation session for tracking message boundaries.
+
+    Sessions are automatically ended after 30 minutes of inactivity.
+    """
+
+    id: int
+    user_id: int
+    started_at: datetime
+    ended_at: datetime | None = None
+    message_count: int = 0
+    summary: str | None = None
+    key_learnings: list[str] = Field(default_factory=list)
+    status: str = "active"  # active, ended, summarized
+
+
+class MemoryNote(BaseModel):
+    """Zettelkasten-style memory note for searchable recall.
+
+    Notes are auto-promoted to core memory if frequently accessed.
+    """
+
+    id: int
+    user_id: int
+    content: str
+    source: str  # conversation, letterboxd, rating_pattern, monitor
+    keywords: list[str] = Field(default_factory=list)
+    confidence: float = 0.5  # 0-1, higher = more reliable
+    created_at: datetime
+    last_accessed: datetime
+    access_count: int = 0
+    archived_at: datetime | None = None  # NULL = active
+
+
+# Block name constants and limits
+CORE_MEMORY_BLOCKS = {
+    "identity": {"max_chars": 500, "agent_editable": False},
+    "preferences": {"max_chars": 800, "agent_editable": True},
+    "watch_context": {"max_chars": 500, "agent_editable": True},
+    "active_context": {"max_chars": 600, "agent_editable": True, "auto_expire_days": 14},
+    "style": {"max_chars": 400, "agent_editable": True},
+    "instructions": {"max_chars": 600, "agent_editable": True, "confirm_update": True},
+    "blocklist": {"max_chars": 600, "agent_editable": True, "confirm_update": True},
+    "learnings": {"max_chars": 1000, "agent_editable": False},
+}
+
+
 # =============================================================================
 # Encryption Helper
 # =============================================================================
@@ -773,6 +841,156 @@ class BaseStorage(ABC):
         """Check if item is blocked."""
         pass
 
+    # -------------------------------------------------------------------------
+    # Core Memory Blocks CRUD
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def get_core_memory_block(
+        self,
+        user_id: int,
+        block_name: str,
+    ) -> CoreMemoryBlock | None:
+        """Get a specific core memory block."""
+        pass
+
+    @abstractmethod
+    async def get_all_core_memory_blocks(
+        self,
+        user_id: int,
+    ) -> list[CoreMemoryBlock]:
+        """Get all core memory blocks for a user."""
+        pass
+
+    @abstractmethod
+    async def update_core_memory_block(
+        self,
+        user_id: int,
+        block_name: str,
+        content: str,
+    ) -> CoreMemoryBlock:
+        """Update a core memory block (creates if not exists)."""
+        pass
+
+    @abstractmethod
+    async def initialize_core_memory_blocks(
+        self,
+        user_id: int,
+    ) -> list[CoreMemoryBlock]:
+        """Initialize all core memory blocks for a new user."""
+        pass
+
+    # -------------------------------------------------------------------------
+    # Conversation Sessions CRUD
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def get_active_session(
+        self,
+        user_id: int,
+    ) -> ConversationSession | None:
+        """Get the active session for a user."""
+        pass
+
+    @abstractmethod
+    async def create_session(
+        self,
+        user_id: int,
+    ) -> ConversationSession:
+        """Create a new conversation session."""
+        pass
+
+    @abstractmethod
+    async def end_session(
+        self,
+        session_id: int,
+        summary: str | None = None,
+        key_learnings: list[str] | None = None,
+    ) -> ConversationSession | None:
+        """End a session and optionally add summary."""
+        pass
+
+    @abstractmethod
+    async def increment_session_message_count(
+        self,
+        session_id: int,
+    ) -> None:
+        """Increment the message count for a session."""
+        pass
+
+    @abstractmethod
+    async def get_recent_sessions(
+        self,
+        user_id: int,
+        limit: int = 10,
+        days: int = 30,
+    ) -> list[ConversationSession]:
+        """Get recent sessions for a user."""
+        pass
+
+    # -------------------------------------------------------------------------
+    # Memory Notes CRUD
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def create_memory_note(
+        self,
+        user_id: int,
+        content: str,
+        source: str,
+        keywords: list[str] | None = None,
+        confidence: float = 0.5,
+    ) -> MemoryNote:
+        """Create a new memory note."""
+        pass
+
+    @abstractmethod
+    async def get_memory_notes(
+        self,
+        user_id: int,
+        source: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+    ) -> list[MemoryNote]:
+        """Get memory notes for a user."""
+        pass
+
+    @abstractmethod
+    async def search_memory_notes(
+        self,
+        user_id: int,
+        query: str,
+        limit: int = 10,
+    ) -> list[MemoryNote]:
+        """Search memory notes by keywords or content."""
+        pass
+
+    @abstractmethod
+    async def update_memory_note_access(
+        self,
+        note_id: int,
+    ) -> None:
+        """Update last_accessed and increment access_count."""
+        pass
+
+    @abstractmethod
+    async def archive_memory_note(
+        self,
+        note_id: int,
+    ) -> bool:
+        """Archive a memory note."""
+        pass
+
+    @abstractmethod
+    async def get_notes_for_archival(
+        self,
+        user_id: int,
+        age_days: int = 90,
+        min_access_count: int = 3,
+    ) -> list[MemoryNote]:
+        """Get notes that should be considered for archival."""
+        pass
+
 
 # =============================================================================
 # SQLite Implementation
@@ -990,6 +1208,60 @@ class SQLiteStorage(BaseStorage):
             """
             ALTER TABLE preferences ADD COLUMN claude_model TEXT DEFAULT 'claude-sonnet-4-5-20250929';
             ALTER TABLE preferences ADD COLUMN thinking_budget INTEGER DEFAULT 0;
+            """,
+            # Migration 12: Core memory blocks table (MemGPT-style)
+            """
+            CREATE TABLE IF NOT EXISTS core_memory_blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                block_name TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                max_chars INTEGER NOT NULL DEFAULT 500,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, block_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_core_memory_user_id ON core_memory_blocks(user_id);
+            """,
+            # Migration 13: Conversation sessions table
+            """
+            CREATE TABLE IF NOT EXISTS conversation_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                message_count INTEGER DEFAULT 0,
+                summary TEXT,
+                key_learnings TEXT DEFAULT '[]',
+                status TEXT DEFAULT 'active',
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON conversation_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_status ON conversation_sessions(status);
+            """,
+            # Migration 14: Memory notes table (Zettelkasten-style)
+            """
+            CREATE TABLE IF NOT EXISTS memory_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL,
+                keywords TEXT DEFAULT '[]',
+                confidence REAL DEFAULT 0.5,
+                created_at TEXT NOT NULL,
+                last_accessed TEXT NOT NULL,
+                access_count INTEGER DEFAULT 0,
+                archived_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_notes_user_id ON memory_notes(user_id);
+            CREATE INDEX IF NOT EXISTS idx_memory_notes_source ON memory_notes(source);
+            CREATE INDEX IF NOT EXISTS idx_memory_notes_archived ON memory_notes(archived_at);
+            """,
+            # Migration 15: Add release_date and last_checked to monitors
+            """
+            ALTER TABLE monitors ADD COLUMN release_date TEXT;
+            ALTER TABLE monitors ADD COLUMN last_checked TEXT;
             """,
         ]
 
@@ -1569,7 +1841,7 @@ class SQLiteStorage(BaseStorage):
             season=row["season"],
             episode=row["episode"],
             rating=row["rating"],
-            review=row.get("review"),
+            review=row["review"],
             watched_at=datetime.fromisoformat(row["watched_at"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
@@ -1919,8 +2191,12 @@ class SQLiteStorage(BaseStorage):
             auto_download=bool(row["auto_download"]),
             status=row["status"],
             found_at=datetime.fromisoformat(row["found_at"]) if row["found_at"] else None,
-            release_date=datetime.fromisoformat(row["release_date"]) if row.get("release_date") else None,
-            last_checked=datetime.fromisoformat(row["last_checked"]) if row.get("last_checked") else None,
+            release_date=datetime.fromisoformat(row["release_date"])
+            if "release_date" in row.keys() and row["release_date"]
+            else None,
+            last_checked=datetime.fromisoformat(row["last_checked"])
+            if "last_checked" in row.keys() and row["last_checked"]
+            else None,
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
@@ -2156,6 +2432,408 @@ class SQLiteStorage(BaseStorage):
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
+    # -------------------------------------------------------------------------
+    # Core Memory Blocks CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def get_core_memory_block(
+        self,
+        user_id: int,
+        block_name: str,
+    ) -> CoreMemoryBlock | None:
+        """Get a specific core memory block."""
+        cursor = await self.db.execute(
+            "SELECT * FROM core_memory_blocks WHERE user_id = ? AND block_name = ?",
+            (user_id, block_name),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_core_memory_block(row) if row else None
+
+    async def get_all_core_memory_blocks(
+        self,
+        user_id: int,
+    ) -> list[CoreMemoryBlock]:
+        """Get all core memory blocks for a user."""
+        cursor = await self.db.execute(
+            "SELECT * FROM core_memory_blocks WHERE user_id = ? ORDER BY block_name",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_core_memory_block(row) for row in rows]
+
+    async def update_core_memory_block(
+        self,
+        user_id: int,
+        block_name: str,
+        content: str,
+    ) -> CoreMemoryBlock:
+        """Update a core memory block (creates if not exists)."""
+        now = datetime.now(UTC).isoformat()
+        max_chars = CORE_MEMORY_BLOCKS.get(block_name, {}).get("max_chars", 500)
+
+        # Truncate content if exceeds max
+        if len(content) > max_chars:
+            content = content[:max_chars]
+
+        cursor = await self.db.execute(
+            """
+            INSERT INTO core_memory_blocks (user_id, block_name, content, max_chars, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, block_name) DO UPDATE SET
+                content = excluded.content,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, block_name, content, max_chars, now),
+        )
+        await self.db.commit()
+
+        block_id = cursor.lastrowid
+        if block_id is None or block_id == 0:
+            cursor = await self.db.execute(
+                "SELECT id FROM core_memory_blocks WHERE user_id = ? AND block_name = ?",
+                (user_id, block_name),
+            )
+            row = await cursor.fetchone()
+            block_id = row["id"] if row else 0
+
+        return CoreMemoryBlock(
+            id=block_id,
+            user_id=user_id,
+            block_name=block_name,
+            content=content,
+            max_chars=max_chars,
+            updated_at=datetime.fromisoformat(now),
+        )
+
+    async def initialize_core_memory_blocks(
+        self,
+        user_id: int,
+    ) -> list[CoreMemoryBlock]:
+        """Initialize all core memory blocks for a new user."""
+        now = datetime.now(UTC).isoformat()
+        blocks: list[CoreMemoryBlock] = []
+
+        for block_name, config in CORE_MEMORY_BLOCKS.items():
+            max_chars = config["max_chars"]
+            cursor = await self.db.execute(
+                """
+                INSERT OR IGNORE INTO core_memory_blocks
+                    (user_id, block_name, content, max_chars, updated_at)
+                VALUES (?, ?, '', ?, ?)
+                """,
+                (user_id, block_name, max_chars, now),
+            )
+
+            block_id = cursor.lastrowid or 0
+            if block_id == 0:
+                cursor = await self.db.execute(
+                    "SELECT id FROM core_memory_blocks WHERE user_id = ? AND block_name = ?",
+                    (user_id, block_name),
+                )
+                row = await cursor.fetchone()
+                block_id = row["id"] if row else 0
+
+            blocks.append(
+                CoreMemoryBlock(
+                    id=block_id,
+                    user_id=user_id,
+                    block_name=block_name,
+                    content="",
+                    max_chars=max_chars,
+                    updated_at=datetime.fromisoformat(now),
+                )
+            )
+
+        await self.db.commit()
+        logger.info("core_memory_blocks_initialized", user_id=user_id)
+        return blocks
+
+    def _row_to_core_memory_block(self, row: Any) -> CoreMemoryBlock:
+        """Convert database row to CoreMemoryBlock model."""
+        return CoreMemoryBlock(
+            id=row["id"],
+            user_id=row["user_id"],
+            block_name=row["block_name"],
+            content=row["content"],
+            max_chars=row["max_chars"],
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    # -------------------------------------------------------------------------
+    # Conversation Sessions CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def get_active_session(
+        self,
+        user_id: int,
+    ) -> ConversationSession | None:
+        """Get the active session for a user."""
+        cursor = await self.db.execute(
+            "SELECT * FROM conversation_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_session(row) if row else None
+
+    async def create_session(
+        self,
+        user_id: int,
+    ) -> ConversationSession:
+        """Create a new conversation session."""
+        now = datetime.now(UTC).isoformat()
+
+        cursor = await self.db.execute(
+            """
+            INSERT INTO conversation_sessions (user_id, started_at, status)
+            VALUES (?, ?, 'active')
+            """,
+            (user_id, now),
+        )
+        await self.db.commit()
+
+        session_id = cursor.lastrowid
+        if session_id is None:
+            raise RuntimeError("Failed to create session")
+
+        logger.info("session_created", user_id=user_id, session_id=session_id)
+
+        return ConversationSession(
+            id=session_id,
+            user_id=user_id,
+            started_at=datetime.fromisoformat(now),
+            status="active",
+        )
+
+    async def end_session(
+        self,
+        session_id: int,
+        summary: str | None = None,
+        key_learnings: list[str] | None = None,
+    ) -> ConversationSession | None:
+        """End a session and optionally add summary."""
+        now = datetime.now(UTC).isoformat()
+        learnings_json = json.dumps(key_learnings or [])
+
+        await self.db.execute(
+            """
+            UPDATE conversation_sessions
+            SET ended_at = ?, summary = ?, key_learnings = ?, status = 'ended'
+            WHERE id = ?
+            """,
+            (now, summary, learnings_json, session_id),
+        )
+        await self.db.commit()
+
+        cursor = await self.db.execute(
+            "SELECT * FROM conversation_sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_session(row) if row else None
+
+    async def increment_session_message_count(
+        self,
+        session_id: int,
+    ) -> None:
+        """Increment the message count for a session."""
+        await self.db.execute(
+            "UPDATE conversation_sessions SET message_count = message_count + 1 WHERE id = ?",
+            (session_id,),
+        )
+        await self.db.commit()
+
+    async def get_recent_sessions(
+        self,
+        user_id: int,
+        limit: int = 10,
+        days: int = 30,
+    ) -> list[ConversationSession]:
+        """Get recent sessions for a user."""
+        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=days)).isoformat()
+
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM conversation_sessions
+            WHERE user_id = ? AND started_at >= ?
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            (user_id, cutoff, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_session(row) for row in rows]
+
+    def _row_to_session(self, row: Any) -> ConversationSession:
+        """Convert database row to ConversationSession model."""
+        return ConversationSession(
+            id=row["id"],
+            user_id=row["user_id"],
+            started_at=datetime.fromisoformat(row["started_at"]),
+            ended_at=datetime.fromisoformat(row["ended_at"]) if row["ended_at"] else None,
+            message_count=row["message_count"],
+            summary=row["summary"],
+            key_learnings=json.loads(row["key_learnings"] or "[]"),
+            status=row["status"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Memory Notes CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def create_memory_note(
+        self,
+        user_id: int,
+        content: str,
+        source: str,
+        keywords: list[str] | None = None,
+        confidence: float = 0.5,
+    ) -> MemoryNote:
+        """Create a new memory note."""
+        now = datetime.now(UTC).isoformat()
+        keywords_json = json.dumps(keywords or [])
+
+        cursor = await self.db.execute(
+            """
+            INSERT INTO memory_notes
+                (user_id, content, source, keywords, confidence, created_at, last_accessed)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, content, source, keywords_json, confidence, now, now),
+        )
+        await self.db.commit()
+
+        note_id = cursor.lastrowid
+        if note_id is None:
+            raise RuntimeError("Failed to create memory note")
+
+        logger.info("memory_note_created", user_id=user_id, source=source)
+
+        return MemoryNote(
+            id=note_id,
+            user_id=user_id,
+            content=content,
+            source=source,
+            keywords=keywords or [],
+            confidence=confidence,
+            created_at=datetime.fromisoformat(now),
+            last_accessed=datetime.fromisoformat(now),
+        )
+
+    async def get_memory_notes(
+        self,
+        user_id: int,
+        source: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+    ) -> list[MemoryNote]:
+        """Get memory notes for a user."""
+        query = "SELECT * FROM memory_notes WHERE user_id = ?"
+        params: list[Any] = [user_id]
+
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+
+        if not include_archived:
+            query += " AND archived_at IS NULL"
+
+        query += " ORDER BY last_accessed DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self.db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [self._row_to_memory_note(row) for row in rows]
+
+    async def search_memory_notes(
+        self,
+        user_id: int,
+        query: str,
+        limit: int = 10,
+    ) -> list[MemoryNote]:
+        """Search memory notes by keywords or content."""
+        # Simple search: check if query is in content or keywords
+        search_pattern = f"%{query}%"
+
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM memory_notes
+            WHERE user_id = ? AND archived_at IS NULL
+                AND (content LIKE ? OR keywords LIKE ?)
+            ORDER BY confidence DESC, access_count DESC
+            LIMIT ?
+            """,
+            (user_id, search_pattern, search_pattern, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_memory_note(row) for row in rows]
+
+    async def update_memory_note_access(
+        self,
+        note_id: int,
+    ) -> None:
+        """Update last_accessed and increment access_count."""
+        now = datetime.now(UTC).isoformat()
+        await self.db.execute(
+            """
+            UPDATE memory_notes
+            SET last_accessed = ?, access_count = access_count + 1
+            WHERE id = ?
+            """,
+            (now, note_id),
+        )
+        await self.db.commit()
+
+    async def archive_memory_note(
+        self,
+        note_id: int,
+    ) -> bool:
+        """Archive a memory note."""
+        now = datetime.now(UTC).isoformat()
+        cursor = await self.db.execute(
+            "UPDATE memory_notes SET archived_at = ? WHERE id = ?",
+            (now, note_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    async def get_notes_for_archival(
+        self,
+        user_id: int,
+        age_days: int = 90,
+        min_access_count: int = 3,
+    ) -> list[MemoryNote]:
+        """Get notes that should be considered for archival."""
+        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=age_days)).isoformat()
+
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM memory_notes
+            WHERE user_id = ?
+                AND archived_at IS NULL
+                AND created_at < ?
+                AND access_count < ?
+            ORDER BY access_count ASC, last_accessed ASC
+            """,
+            (user_id, cutoff, min_access_count),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_memory_note(row) for row in rows]
+
+    def _row_to_memory_note(self, row: Any) -> MemoryNote:
+        """Convert database row to MemoryNote model."""
+        return MemoryNote(
+            id=row["id"],
+            user_id=row["user_id"],
+            content=row["content"],
+            source=row["source"],
+            keywords=json.loads(row["keywords"] or "[]"),
+            confidence=row["confidence"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            last_accessed=datetime.fromisoformat(row["last_accessed"]),
+            access_count=row["access_count"],
+            archived_at=datetime.fromisoformat(row["archived_at"]) if row["archived_at"] else None,
+        )
+
 
 # =============================================================================
 # PostgreSQL Implementation
@@ -2361,6 +3039,57 @@ class PostgresStorage(BaseStorage):
             """
             ALTER TABLE preferences ADD COLUMN IF NOT EXISTS claude_model TEXT DEFAULT 'claude-sonnet-4-5-20250929';
             ALTER TABLE preferences ADD COLUMN IF NOT EXISTS thinking_budget INTEGER DEFAULT 0;
+            """,
+            # Migration 12: Core memory blocks table (MemGPT-style)
+            """
+            CREATE TABLE IF NOT EXISTS core_memory_blocks (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                block_name TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                max_chars INTEGER NOT NULL DEFAULT 500,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(user_id, block_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_core_memory_user_id ON core_memory_blocks(user_id);
+            """,
+            # Migration 13: Conversation sessions table
+            """
+            CREATE TABLE IF NOT EXISTS conversation_sessions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ended_at TIMESTAMPTZ,
+                message_count INTEGER DEFAULT 0,
+                summary TEXT,
+                key_learnings JSONB DEFAULT '[]',
+                status TEXT DEFAULT 'active'
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON conversation_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_status ON conversation_sessions(status);
+            """,
+            # Migration 14: Memory notes table (Zettelkasten-style)
+            """
+            CREATE TABLE IF NOT EXISTS memory_notes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL,
+                keywords JSONB DEFAULT '[]',
+                confidence REAL DEFAULT 0.5,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_accessed TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                access_count INTEGER DEFAULT 0,
+                archived_at TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_notes_user_id ON memory_notes(user_id);
+            CREATE INDEX IF NOT EXISTS idx_memory_notes_source ON memory_notes(source);
+            CREATE INDEX IF NOT EXISTS idx_memory_notes_archived ON memory_notes(archived_at);
+            """,
+            # Migration 15: Add release_date and last_checked to monitors
+            """
+            ALTER TABLE monitors ADD COLUMN IF NOT EXISTS release_date TIMESTAMPTZ;
+            ALTER TABLE monitors ADD COLUMN IF NOT EXISTS last_checked TIMESTAMPTZ;
             """,
         ]
 
@@ -3447,6 +4176,374 @@ class PostgresStorage(BaseStorage):
             block_level=row["block_level"],
             notes=row["notes"],
             created_at=row["created_at"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Core Memory Blocks CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def get_core_memory_block(
+        self,
+        user_id: int,
+        block_name: str,
+    ) -> CoreMemoryBlock | None:
+        """Get a specific core memory block."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM core_memory_blocks WHERE user_id = $1 AND block_name = $2",
+                user_id,
+                block_name,
+            )
+        return self._row_to_core_memory_block(row) if row else None
+
+    async def get_all_core_memory_blocks(
+        self,
+        user_id: int,
+    ) -> list[CoreMemoryBlock]:
+        """Get all core memory blocks for a user."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM core_memory_blocks WHERE user_id = $1 ORDER BY block_name",
+                user_id,
+            )
+        return [self._row_to_core_memory_block(row) for row in rows]
+
+    async def update_core_memory_block(
+        self,
+        user_id: int,
+        block_name: str,
+        content: str,
+    ) -> CoreMemoryBlock:
+        """Update a core memory block (creates if not exists)."""
+        max_chars = CORE_MEMORY_BLOCKS.get(block_name, {}).get("max_chars", 500)
+
+        # Truncate content if exceeds max
+        if len(content) > max_chars:
+            content = content[:max_chars]
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO core_memory_blocks (user_id, block_name, content, max_chars)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT(user_id, block_name) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                user_id,
+                block_name,
+                content,
+                max_chars,
+            )
+
+        return self._row_to_core_memory_block(row)
+
+    async def initialize_core_memory_blocks(
+        self,
+        user_id: int,
+    ) -> list[CoreMemoryBlock]:
+        """Initialize all core memory blocks for a new user."""
+        blocks: list[CoreMemoryBlock] = []
+
+        async with self.pool.acquire() as conn:
+            for block_name, config in CORE_MEMORY_BLOCKS.items():
+                max_chars = config["max_chars"]
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO core_memory_blocks (user_id, block_name, content, max_chars)
+                    VALUES ($1, $2, '', $3)
+                    ON CONFLICT(user_id, block_name) DO NOTHING
+                    RETURNING *
+                    """,
+                    user_id,
+                    block_name,
+                    max_chars,
+                )
+
+                if row is None:
+                    # Already exists, fetch it
+                    row = await conn.fetchrow(
+                        "SELECT * FROM core_memory_blocks WHERE user_id = $1 AND block_name = $2",
+                        user_id,
+                        block_name,
+                    )
+
+                if row:
+                    blocks.append(self._row_to_core_memory_block(row))
+
+        logger.info("core_memory_blocks_initialized", user_id=user_id)
+        return blocks
+
+    def _row_to_core_memory_block(self, row: Any) -> CoreMemoryBlock:
+        """Convert database row to CoreMemoryBlock model."""
+        return CoreMemoryBlock(
+            id=row["id"],
+            user_id=row["user_id"],
+            block_name=row["block_name"],
+            content=row["content"],
+            max_chars=row["max_chars"],
+            updated_at=row["updated_at"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Conversation Sessions CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def get_active_session(
+        self,
+        user_id: int,
+    ) -> ConversationSession | None:
+        """Get the active session for a user."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM conversation_sessions WHERE user_id = $1 AND status = 'active' ORDER BY started_at DESC LIMIT 1",
+                user_id,
+            )
+        return self._row_to_session(row) if row else None
+
+    async def create_session(
+        self,
+        user_id: int,
+    ) -> ConversationSession:
+        """Create a new conversation session."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO conversation_sessions (user_id, status)
+                VALUES ($1, 'active')
+                RETURNING *
+                """,
+                user_id,
+            )
+
+        logger.info("session_created", user_id=user_id, session_id=row["id"])
+        return self._row_to_session(row)
+
+    async def end_session(
+        self,
+        session_id: int,
+        summary: str | None = None,
+        key_learnings: list[str] | None = None,
+    ) -> ConversationSession | None:
+        """End a session and optionally add summary."""
+        learnings_json = json.dumps(key_learnings or [])
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE conversation_sessions
+                SET ended_at = NOW(), summary = $2, key_learnings = $3::jsonb, status = 'ended'
+                WHERE id = $1
+                RETURNING *
+                """,
+                session_id,
+                summary,
+                learnings_json,
+            )
+
+        return self._row_to_session(row) if row else None
+
+    async def increment_session_message_count(
+        self,
+        session_id: int,
+    ) -> None:
+        """Increment the message count for a session."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE conversation_sessions SET message_count = message_count + 1 WHERE id = $1",
+                session_id,
+            )
+
+    async def get_recent_sessions(
+        self,
+        user_id: int,
+        limit: int = 10,
+        days: int = 30,
+    ) -> list[ConversationSession]:
+        """Get recent sessions for a user."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM conversation_sessions
+                WHERE user_id = $1 AND started_at >= NOW() - INTERVAL '1 day' * $2
+                ORDER BY started_at DESC
+                LIMIT $3
+                """,
+                user_id,
+                days,
+                limit,
+            )
+        return [self._row_to_session(row) for row in rows]
+
+    def _row_to_session(self, row: Any) -> ConversationSession:
+        """Convert database row to ConversationSession model."""
+        key_learnings = row["key_learnings"] or []
+        if isinstance(key_learnings, str):
+            key_learnings = json.loads(key_learnings)
+
+        return ConversationSession(
+            id=row["id"],
+            user_id=row["user_id"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            message_count=row["message_count"],
+            summary=row["summary"],
+            key_learnings=key_learnings,
+            status=row["status"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Memory Notes CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def create_memory_note(
+        self,
+        user_id: int,
+        content: str,
+        source: str,
+        keywords: list[str] | None = None,
+        confidence: float = 0.5,
+    ) -> MemoryNote:
+        """Create a new memory note."""
+        keywords_json = json.dumps(keywords or [])
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO memory_notes
+                    (user_id, content, source, keywords, confidence)
+                VALUES ($1, $2, $3, $4::jsonb, $5)
+                RETURNING *
+                """,
+                user_id,
+                content,
+                source,
+                keywords_json,
+                confidence,
+            )
+
+        logger.info("memory_note_created", user_id=user_id, source=source)
+        return self._row_to_memory_note(row)
+
+    async def get_memory_notes(
+        self,
+        user_id: int,
+        source: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+    ) -> list[MemoryNote]:
+        """Get memory notes for a user."""
+        query = "SELECT * FROM memory_notes WHERE user_id = $1"
+        params: list[Any] = [user_id]
+        param_idx = 2
+
+        if source:
+            query += f" AND source = ${param_idx}"
+            params.append(source)
+            param_idx += 1
+
+        if not include_archived:
+            query += " AND archived_at IS NULL"
+
+        query += f" ORDER BY last_accessed DESC LIMIT ${param_idx}"
+        params.append(limit)
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return [self._row_to_memory_note(row) for row in rows]
+
+    async def search_memory_notes(
+        self,
+        user_id: int,
+        query: str,
+        limit: int = 10,
+    ) -> list[MemoryNote]:
+        """Search memory notes by keywords or content."""
+        search_pattern = f"%{query}%"
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM memory_notes
+                WHERE user_id = $1 AND archived_at IS NULL
+                    AND (content ILIKE $2 OR keywords::text ILIKE $2)
+                ORDER BY confidence DESC, access_count DESC
+                LIMIT $3
+                """,
+                user_id,
+                search_pattern,
+                limit,
+            )
+        return [self._row_to_memory_note(row) for row in rows]
+
+    async def update_memory_note_access(
+        self,
+        note_id: int,
+    ) -> None:
+        """Update last_accessed and increment access_count."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE memory_notes
+                SET last_accessed = NOW(), access_count = access_count + 1
+                WHERE id = $1
+                """,
+                note_id,
+            )
+
+    async def archive_memory_note(
+        self,
+        note_id: int,
+    ) -> bool:
+        """Archive a memory note."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE memory_notes SET archived_at = NOW() WHERE id = $1",
+                note_id,
+            )
+        return result == "UPDATE 1"
+
+    async def get_notes_for_archival(
+        self,
+        user_id: int,
+        age_days: int = 90,
+        min_access_count: int = 3,
+    ) -> list[MemoryNote]:
+        """Get notes that should be considered for archival."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM memory_notes
+                WHERE user_id = $1
+                    AND archived_at IS NULL
+                    AND created_at < NOW() - INTERVAL '1 day' * $2
+                    AND access_count < $3
+                ORDER BY access_count ASC, last_accessed ASC
+                """,
+                user_id,
+                age_days,
+                min_access_count,
+            )
+        return [self._row_to_memory_note(row) for row in rows]
+
+    def _row_to_memory_note(self, row: Any) -> MemoryNote:
+        """Convert database row to MemoryNote model."""
+        keywords = row["keywords"] or []
+        if isinstance(keywords, str):
+            keywords = json.loads(keywords)
+
+        return MemoryNote(
+            id=row["id"],
+            user_id=row["user_id"],
+            content=row["content"],
+            source=row["source"],
+            keywords=keywords,
+            confidence=row["confidence"],
+            created_at=row["created_at"],
+            last_accessed=row["last_accessed"],
+            access_count=row["access_count"],
+            archived_at=row["archived_at"],
         )
 
 
