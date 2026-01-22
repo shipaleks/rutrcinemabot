@@ -640,8 +640,8 @@ LETTERBOXD_SYNC_TOOL = {
             },
             "diary_limit": {
                 "type": "integer",
-                "description": "Максимум записей из дневника (по умолчанию 50)",
-                "default": 50,
+                "description": "Максимум записей из дневника (по умолчанию 10000 - все записи)",
+                "default": 10000,
             },
         },
         "required": ["user_id", "letterboxd_username"],

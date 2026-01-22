@@ -456,14 +456,14 @@ class LetterboxdClient:
     async def get_watchlist(
         self,
         username: str | None = None,
-        limit: int = 50,
+        limit: int = 100,
         cursor: str | None = None,
     ) -> list[LetterboxdWatchlistEntry]:
         """Get user's watchlist.
 
         Args:
             username: Username (None for authenticated user)
-            limit: Maximum entries to return
+            limit: Maximum entries to return per page (API max is typically 100)
             cursor: Pagination cursor
 
         Returns:
@@ -512,15 +512,15 @@ class LetterboxdClient:
     async def get_diary(
         self,
         username: str | None = None,
-        limit: int = 50,
+        limit: int = 100,
         cursor: str | None = None,
     ) -> list[LetterboxdDiaryEntry]:
         """Get user's diary (watch history).
 
         Args:
             username: Username (None for authenticated user)
-            limit: Maximum entries to return
-            cursor: Pagination cursor
+            limit: Maximum entries to return per page (API max is typically 100)
+            cursor: Pagination cursor for getting more results
 
         Returns:
             List of diary entries

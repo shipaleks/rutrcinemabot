@@ -256,11 +256,22 @@ class MonitoringScheduler:
                 for release in found:
                     found_releases.append(release)
 
-                    # Update monitor status
+                    # Store found release data for later download via button
+                    found_data = {
+                        "magnet": release.magnet,
+                        "quality": release.quality,
+                        "size": release.size,
+                        "seeds": release.seeds,
+                        "source": release.source,
+                        "torrent_title": release.torrent_title,
+                    }
+
+                    # Update monitor status with found_data
                     await storage.update_monitor_status(
                         release.monitor_id,
                         status="found",
                         found_at=datetime.now(UTC),
+                        found_data=found_data,
                     )
 
                     # Get user's telegram_id for notification

@@ -1604,7 +1604,7 @@ async def handle_letterboxd_sync(tool_input: dict[str, Any]) -> str:
 
     sync_watchlist = tool_input.get("sync_watchlist", True)
     sync_diary = tool_input.get("sync_diary", True)
-    diary_limit = tool_input.get("diary_limit", 50)
+    diary_limit = tool_input.get("diary_limit", 10000)
 
     logger.info(
         "letterboxd_rss_sync",
@@ -2162,3 +2162,180 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
                 # If HTML formatting fails, try plain text
                 logger.warning("html_format_failed", error=str(e))
                 await query.edit_message_text(f"{title}\n\nMagnet-ссылка:\n{magnet}")
+
+
+async def handle_monitor_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle monitoring button callbacks (download, details, cancel).
+
+    Callback patterns:
+    - monitor_download_{monitor_id}: Download the found release
+    - monitor_details_{monitor_id}: Show release details
+    - monitor_cancel_{monitor_id}: Cancel monitoring
+    """
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    callback_data = query.data
+    user = update.effective_user
+    if not user:
+        return
+
+    logger.info("monitor_callback", user_id=user.id, callback=callback_data)
+
+    # Parse callback data
+    if callback_data.startswith("monitor_download_"):
+        monitor_id = int(callback_data.replace("monitor_download_", ""))
+        await _handle_monitor_download(query, user.id, monitor_id)
+    elif callback_data.startswith("monitor_details_"):
+        monitor_id = int(callback_data.replace("monitor_details_", ""))
+        await _handle_monitor_details(query, user.id, monitor_id)
+    elif callback_data.startswith("monitor_cancel_"):
+        monitor_id = int(callback_data.replace("monitor_cancel_", ""))
+        await _handle_monitor_cancel(query, user.id, monitor_id)
+
+
+async def _handle_monitor_download(query: Any, telegram_id: int, monitor_id: int) -> None:
+    """Handle download button for monitoring notification."""
+    async with get_storage() as storage:
+        # Get monitor with found_data
+        monitor = await storage.get_monitor(monitor_id)
+        if not monitor:
+            await query.edit_message_text("Монитор не найден.")
+            return
+
+        # Verify ownership
+        db_user = await storage.get_user_by_telegram_id(telegram_id)
+        if not db_user or monitor.user_id != db_user.id:
+            await query.edit_message_text("У вас нет доступа к этому монитору.")
+            return
+
+        # Check if we have found_data with magnet
+        if not monitor.found_data or not monitor.found_data.get("magnet"):
+            await query.edit_message_text(
+                "Данные о релизе не найдены. Попробуйте поиск вручную."
+            )
+            return
+
+        magnet = monitor.found_data["magnet"]
+        title = monitor.title
+        quality = monitor.found_data.get("quality", "")
+        size = monitor.found_data.get("size", "")
+
+        # Try to send to seedbox
+        try:
+            result = await send_magnet_to_seedbox(magnet)
+            if result.get("status") == "sent":
+                torrent_hash = result.get("hash", "")[:8]
+                await query.edit_message_text(
+                    f"**{title}** ({quality}, {size})\n\n"
+                    f"✅ Отправлено на seedbox\n"
+                    f"Hash: `{torrent_hash}...`",
+                    parse_mode="Markdown",
+                )
+                return
+        except Exception as e:
+            logger.warning("seedbox_send_failed", error=str(e))
+
+        # Seedbox not available - show magnet link
+        try:
+            await query.edit_message_text(
+                f"<b>{title}</b> ({quality}, {size})\n\n"
+                f"Скопируйте magnet-ссылку:\n<code>{magnet}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            await query.edit_message_text(f"{title}\n\nMagnet:\n{magnet}")
+
+
+async def _handle_monitor_details(query: Any, telegram_id: int, monitor_id: int) -> None:
+    """Handle details button for monitoring notification."""
+    async with get_storage() as storage:
+        monitor = await storage.get_monitor(monitor_id)
+        if not monitor:
+            await query.edit_message_text("Монитор не найден.")
+            return
+
+        # Verify ownership
+        db_user = await storage.get_user_by_telegram_id(telegram_id)
+        if not db_user or monitor.user_id != db_user.id:
+            await query.edit_message_text("У вас нет доступа к этому монитору.")
+            return
+
+        # Build details message
+        found_data = monitor.found_data or {}
+        details = [
+            f"**{monitor.title}**",
+            f"Тип: {monitor.media_type}",
+            f"Качество: {monitor.quality}",
+            f"Статус: {monitor.status}",
+        ]
+
+        if found_data:
+            details.append("")
+            details.append("**Найденный релиз:**")
+            if found_data.get("torrent_title"):
+                details.append(f"Название: {found_data['torrent_title']}")
+            if found_data.get("quality"):
+                details.append(f"Качество: {found_data['quality']}")
+            if found_data.get("size"):
+                details.append(f"Размер: {found_data['size']}")
+            if found_data.get("seeds"):
+                details.append(f"Сиды: {found_data['seeds']}")
+            if found_data.get("source"):
+                details.append(f"Источник: {found_data['source'].title()}")
+
+        if monitor.found_at:
+            details.append(f"\nНайден: {monitor.found_at.strftime('%d.%m.%Y %H:%M')}")
+
+        # Keep action buttons
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⬇️ Скачать",
+                        callback_data=f"monitor_download_{monitor_id}",
+                    ),
+                    InlineKeyboardButton(
+                        "🔕 Отменить",
+                        callback_data=f"monitor_cancel_{monitor_id}",
+                    ),
+                ],
+            ]
+        )
+
+        await query.edit_message_text(
+            "\n".join(details),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+
+async def _handle_monitor_cancel(query: Any, telegram_id: int, monitor_id: int) -> None:
+    """Handle cancel button for monitoring notification."""
+    async with get_storage() as storage:
+        monitor = await storage.get_monitor(monitor_id)
+        if not monitor:
+            await query.edit_message_text("Монитор не найден.")
+            return
+
+        # Verify ownership
+        db_user = await storage.get_user_by_telegram_id(telegram_id)
+        if not db_user or monitor.user_id != db_user.id:
+            await query.edit_message_text("У вас нет доступа к этому монитору.")
+            return
+
+        title = monitor.title
+
+        # Delete the monitor
+        deleted = await storage.delete_monitor(monitor_id)
+        if deleted:
+            await query.edit_message_text(
+                f"🔕 Мониторинг **{title}** отменён.",
+                parse_mode="Markdown",
+            )
+            logger.info("monitor_cancelled", user_id=telegram_id, monitor_id=monitor_id)
+        else:
+            await query.edit_message_text("Не удалось отменить мониторинг.")

@@ -73,7 +73,7 @@ class LetterboxdRSS:
     Usage:
         client = LetterboxdRSS("username")
         watchlist = await client.get_watchlist()
-        diary = await client.get_diary(limit=50)
+        diary = await client.get_diary()  # Gets all available entries
     """
 
     def __init__(self, username: str):
@@ -195,11 +195,11 @@ class LetterboxdRSS:
             # Fallback to now
             return datetime.now()
 
-    async def get_watchlist(self, limit: int = 100) -> list[LetterboxdRSSWatchlistItem]:
+    async def get_watchlist(self, limit: int = 10000) -> list[LetterboxdRSSWatchlistItem]:
         """Get user's watchlist from RSS.
 
         Args:
-            limit: Maximum items to return
+            limit: Maximum items to return (default 10000 - all available)
 
         Returns:
             List of watchlist items (empty if watchlist is empty/private)
@@ -262,11 +262,11 @@ class LetterboxdRSS:
         logger.info("letterboxd_watchlist_fetched", count=len(items))
         return items
 
-    async def get_diary(self, limit: int = 100) -> list[LetterboxdRSSDiaryEntry]:
+    async def get_diary(self, limit: int = 10000) -> list[LetterboxdRSSDiaryEntry]:
         """Get user's diary (watch history) from RSS.
 
         Args:
-            limit: Maximum entries to return
+            limit: Maximum entries to return (default 10000 - all available)
 
         Returns:
             List of diary entries with ratings
@@ -368,7 +368,7 @@ async def sync_letterboxd_to_storage(
     user_id: int,
     sync_watchlist: bool = True,
     sync_diary: bool = True,
-    diary_limit: int = 50,
+    diary_limit: int = 10000,
 ) -> dict[str, int]:
     """Sync Letterboxd data to bot storage via RSS.
 
@@ -378,7 +378,7 @@ async def sync_letterboxd_to_storage(
         user_id: Internal user ID
         sync_watchlist: Whether to import watchlist
         sync_diary: Whether to import diary/watch history
-        diary_limit: Max diary entries to import
+        diary_limit: Max diary entries to import (default 10000 - all)
 
     Returns:
         Dict with sync results: {"watchlist_imported": N, "diary_imported": N, ...}

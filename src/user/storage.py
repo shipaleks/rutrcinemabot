@@ -167,6 +167,8 @@ class Monitor(BaseModel):
     release_date: datetime | None = None  # Expected release date from TMDB
     last_checked: datetime | None = None  # Last time this monitor was checked
     created_at: datetime
+    # Found release data (stored when release is found)
+    found_data: dict[str, Any] | None = None  # magnet, quality, size, seeds, source, torrent_title
 
 
 class CrewStat(BaseModel):
@@ -739,8 +741,9 @@ class BaseStorage(ABC):
         monitor_id: int,
         status: str,
         found_at: datetime | None = None,
+        found_data: dict[str, Any] | None = None,
     ) -> Monitor | None:
-        """Update monitor status."""
+        """Update monitor status and optionally store found release data."""
         pass
 
     @abstractmethod
@@ -1262,6 +1265,10 @@ class SQLiteStorage(BaseStorage):
             """
             ALTER TABLE monitors ADD COLUMN release_date TEXT;
             ALTER TABLE monitors ADD COLUMN last_checked TEXT;
+            """,
+            # Migration 16: Add found_data to monitors (stores magnet, size, seeds when found)
+            """
+            ALTER TABLE monitors ADD COLUMN found_data TEXT;
             """,
         ]
 
@@ -2129,13 +2136,15 @@ class SQLiteStorage(BaseStorage):
         monitor_id: int,
         status: str,
         found_at: datetime | None = None,
+        found_data: dict[str, Any] | None = None,
     ) -> Monitor | None:
-        """Update monitor status."""
+        """Update monitor status and optionally store found release data."""
         found_str = found_at.isoformat() if found_at else None
+        found_data_str = json.dumps(found_data) if found_data else None
 
         await self.db.execute(
-            "UPDATE monitors SET status = ?, found_at = ? WHERE id = ?",
-            (status, found_str, monitor_id),
+            "UPDATE monitors SET status = ?, found_at = ?, found_data = ? WHERE id = ?",
+            (status, found_str, found_data_str, monitor_id),
         )
         await self.db.commit()
 
@@ -2183,6 +2192,11 @@ class SQLiteStorage(BaseStorage):
 
     def _row_to_monitor(self, row: Any) -> Monitor:
         """Convert database row to Monitor model."""
+        # Parse found_data JSON if present
+        found_data = None
+        if "found_data" in row.keys() and row["found_data"]:
+            found_data = json.loads(row["found_data"])
+
         return Monitor(
             id=row["id"],
             user_id=row["user_id"],
@@ -2200,6 +2214,7 @@ class SQLiteStorage(BaseStorage):
             if "last_checked" in row.keys() and row["last_checked"]
             else None,
             created_at=datetime.fromisoformat(row["created_at"]),
+            found_data=found_data,
         )
 
     # -------------------------------------------------------------------------
@@ -3093,6 +3108,10 @@ class PostgresStorage(BaseStorage):
             ALTER TABLE monitors ADD COLUMN IF NOT EXISTS release_date TIMESTAMPTZ;
             ALTER TABLE monitors ADD COLUMN IF NOT EXISTS last_checked TIMESTAMPTZ;
             """,
+            # Migration 16: Add found_data to monitors (stores magnet, size, seeds when found)
+            """
+            ALTER TABLE monitors ADD COLUMN IF NOT EXISTS found_data TEXT;
+            """,
         ]
 
         async with self.pool.acquire() as conn:
@@ -3904,13 +3923,17 @@ class PostgresStorage(BaseStorage):
         monitor_id: int,
         status: str,
         found_at: datetime | None = None,
+        found_data: dict[str, Any] | None = None,
     ) -> Monitor | None:
-        """Update monitor status."""
+        """Update monitor status and optionally store found release data."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "UPDATE monitors SET status = $1, found_at = $2 WHERE id = $3 RETURNING *",
+                """UPDATE monitors
+                SET status = $1, found_at = $2, found_data = $3
+                WHERE id = $4 RETURNING *""",
                 status,
                 found_at,
+                json.dumps(found_data) if found_data else None,
                 monitor_id,
             )
 
@@ -3955,6 +3978,11 @@ class PostgresStorage(BaseStorage):
 
     def _row_to_monitor(self, row: Any) -> Monitor:
         """Convert database row to Monitor model."""
+        # Parse found_data JSON if present
+        found_data = None
+        if row.get("found_data"):
+            found_data = json.loads(row["found_data"])
+
         return Monitor(
             id=row["id"],
             user_id=row["user_id"],
@@ -3968,6 +3996,7 @@ class PostgresStorage(BaseStorage):
             release_date=row.get("release_date"),
             last_checked=row.get("last_checked"),
             created_at=row["created_at"],
+            found_data=found_data,
         )
 
     # -------------------------------------------------------------------------
