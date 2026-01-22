@@ -83,6 +83,7 @@ class ConversationContext:
     core_memory_content: str | None = None
     telegram_user_id: int | None = None
     max_history: int = 20
+    last_search_result_ids: list[str] = field(default_factory=list)  # For re-showing buttons
 
     def add_message(self, role: str, content: str | list[dict[str, Any]]) -> None:
         """Add a message to the conversation history.
