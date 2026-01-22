@@ -169,6 +169,10 @@ class Monitor(BaseModel):
     created_at: datetime
     # Found release data (stored when release is found)
     found_data: dict[str, Any] | None = None  # magnet, quality, size, seeds, source, torrent_title
+    # TV series episode tracking
+    season_number: int | None = None  # For episode-by-episode tracking
+    episode_number: int | None = None  # Current episode to track
+    tracking_mode: str = "season"  # "season" (whole season) or "episode" (per episode)
 
 
 class CrewStat(BaseModel):
