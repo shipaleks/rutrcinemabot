@@ -2008,23 +2008,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         results_after = set(_search_results_cache.keys())
         new_result_ids = results_after - results_before
 
-        # Determine which results to show buttons for
-        result_ids_to_show = list(new_result_ids) if new_result_ids else []
-
-        # If no new results but we have last search results, show those again
-        # (useful when user asks to clarify/refine without new search)
-        if not result_ids_to_show and conv_context.last_search_result_ids:
-            # Check if previous results still in cache (not expired)
-            valid_previous_ids = [
-                rid for rid in conv_context.last_search_result_ids if rid in _search_results_cache
-            ]
-            if valid_previous_ids:
-                result_ids_to_show = valid_previous_ids[:10]  # Keep last 10 results
-
-        if result_ids_to_show:
+        # Only show buttons if NEW search was performed in this request
+        # This prevents showing old buttons when context has changed
+        if new_result_ids:
             # Collect results with all info for sorting and display
             results_with_info = []
-            for result_id in result_ids_to_show:
+            for result_id in new_result_ids:
                 result_data = _search_results_cache.get(result_id)
                 if result_data:
                     results_with_info.append(
@@ -2040,9 +2029,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Sort by seeds descending (best results first)
             results_with_info.sort(key=lambda x: x.get("seeds", 0), reverse=True)
 
-            # Update context with current result IDs
-            if new_result_ids:
-                conv_context.last_search_result_ids = [r["id"] for r in results_with_info[:10]]
+            # Update context with current result IDs for potential re-use
+            conv_context.last_search_result_ids = [r["id"] for r in results_with_info[:10]]
 
             # Take top 5 for buttons
             if results_with_info[:5]:
