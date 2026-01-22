@@ -256,6 +256,11 @@ class MonitoringScheduler:
                 for release in found:
                     found_releases.append(release)
 
+                    # Get monitor for settings before updating status
+                    monitor = await storage.get_monitor(release.monitor_id)
+                    if not monitor:
+                        continue
+
                     # Store found release data for later download via button
                     found_data = {
                         "magnet": release.magnet,
@@ -274,17 +279,27 @@ class MonitoringScheduler:
                         found_data=found_data,
                     )
 
+                    # Auto-create next episode monitor for episode tracking mode
+                    next_monitor_id = None
+                    if (
+                        monitor.media_type == "tv"
+                        and monitor.tracking_mode == "episode"
+                        and monitor.episode_number is not None
+                    ):
+                        next_monitor_id = await self._create_next_episode_monitor(
+                            storage, monitor
+                        )
+
                     # Get user's telegram_id for notification
                     user = await storage.get_user(release.user_id)
                     if user:
-                        # Get monitor for auto_download setting
-                        monitor = await storage.get_monitor(release.monitor_id)
-
-                        # Send notification
-                        await self._notify_user(user.telegram_id, release)
+                        # Send notification with info about next episode if created
+                        await self._notify_user(
+                            user.telegram_id, release, monitor, next_monitor_id
+                        )
 
                         # Auto-download if enabled
-                        if monitor and monitor.auto_download:
+                        if monitor.auto_download:
                             await self._auto_download(release)
 
                         # Sync monitors to memory (update active_context)
@@ -417,47 +432,129 @@ class MonitoringScheduler:
         except Exception as e:
             logger.exception("learning_detection_failed", error=str(e))
 
+    async def _create_next_episode_monitor(
+        self,
+        storage: Any,
+        current_monitor: Monitor,
+    ) -> int | None:
+        """Create monitor for the next episode automatically.
+
+        Args:
+            storage: Storage instance
+            current_monitor: The monitor that was just found
+
+        Returns:
+            New monitor ID if created, None otherwise
+        """
+        if (
+            current_monitor.episode_number is None
+            or current_monitor.season_number is None
+        ):
+            return None
+
+        next_episode = current_monitor.episode_number + 1
+
+        try:
+            new_monitor = await storage.create_monitor(
+                user_id=current_monitor.user_id,
+                title=current_monitor.title,
+                tmdb_id=current_monitor.tmdb_id,
+                media_type="tv",
+                quality=current_monitor.quality,
+                auto_download=current_monitor.auto_download,
+                tracking_mode="episode",
+                season_number=current_monitor.season_number,
+                episode_number=next_episode,
+            )
+
+            logger.info(
+                "next_episode_monitor_created",
+                title=current_monitor.title,
+                season=current_monitor.season_number,
+                episode=next_episode,
+                new_monitor_id=new_monitor.id,
+            )
+
+            return new_monitor.id
+
+        except Exception as e:
+            logger.error(
+                "next_episode_monitor_creation_failed",
+                title=current_monitor.title,
+                error=str(e),
+            )
+            return None
+
     async def _notify_user(
         self,
         telegram_id: int,
         release: FoundRelease,
+        monitor: Monitor | None = None,
+        next_monitor_id: int | None = None,
     ) -> None:
         """Send Telegram notification about found release.
 
         Args:
             telegram_id: User's Telegram ID
             release: Found release information
+            monitor: Original monitor (for episode info)
+            next_monitor_id: ID of auto-created next episode monitor
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+        # Format episode info if available
+        episode_info = ""
+        if (
+            monitor
+            and monitor.tracking_mode == "episode"
+            and monitor.season_number
+            and monitor.episode_number
+        ):
+            episode_info = f" S{monitor.season_number:02d}E{monitor.episode_number:02d}"
+
         # Format notification message
         message = (
-            f"**{release.title}** — доступен\n\n"
-            f"{release.quality} | {release.size} | {release.seeds} сидов\n"
-            f"Источник: {release.source.title()}"
+            f"🎬 **{release.title}{episode_info}** — доступен!\n\n"
+            f"📊 {release.quality} | {release.size} | {release.seeds} сидов\n"
+            f"📡 Источник: {release.source.title()}"
         )
 
+        # Add next episode info
+        if next_monitor_id and monitor and monitor.episode_number:
+            next_ep = monitor.episode_number + 1
+            message += f"\n\n⏭️ Мониторинг следующего эпизода (E{next_ep:02d}) создан автоматически"
+
         # Create inline keyboard for actions
-        keyboard = InlineKeyboardMarkup(
+        buttons = [
             [
-                [
-                    InlineKeyboardButton(
-                        "⬇️ Скачать",
-                        callback_data=f"monitor_download_{release.monitor_id}",
-                    ),
-                    InlineKeyboardButton(
-                        "📋 Детали",
-                        callback_data=f"monitor_details_{release.monitor_id}",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🔕 Отменить мониторинг",
-                        callback_data=f"monitor_cancel_{release.monitor_id}",
-                    ),
-                ],
-            ]
-        )
+                InlineKeyboardButton(
+                    "⬇️ Скачать",
+                    callback_data=f"monitor_download_{release.monitor_id}",
+                ),
+                InlineKeyboardButton(
+                    "📋 Детали",
+                    callback_data=f"monitor_details_{release.monitor_id}",
+                ),
+            ],
+        ]
+
+        # Add cancel next episode button if one was created
+        if next_monitor_id:
+            buttons.append([
+                InlineKeyboardButton(
+                    "⏹️ Отменить следующий эпизод",
+                    callback_data=f"monitor_cancel_{next_monitor_id}",
+                ),
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(
+                    "🔕 Отменить мониторинг",
+                    callback_data=f"monitor_cancel_{release.monitor_id}",
+                ),
+            ])
+
+        keyboard = InlineKeyboardMarkup(buttons)
 
         try:
             await self._bot.send_message(
@@ -470,6 +567,7 @@ class MonitoringScheduler:
                 "monitoring_notification_sent",
                 telegram_id=telegram_id,
                 title=release.title,
+                next_episode_created=next_monitor_id is not None,
             )
         except Exception as e:
             logger.error(
