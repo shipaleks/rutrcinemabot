@@ -1452,6 +1452,10 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
     media_type = tool_input.get("media_type", "movie")
     quality = tool_input.get("quality", "1080p")
     auto_download = tool_input.get("auto_download", False)
+    # TV series episode tracking
+    tracking_mode = tool_input.get("tracking_mode", "season")
+    season_number = tool_input.get("season_number")
+    episode_number = tool_input.get("episode_number")
 
     if not user_id or not title:
         return json.dumps(
@@ -1459,7 +1463,25 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
             ensure_ascii=False,
         )
 
-    logger.info("create_monitor", user_id=user_id, title=title, quality=quality)
+    # Validate episode tracking parameters
+    if tracking_mode == "episode" and (season_number is None or episode_number is None):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "Для режима 'episode' требуется указать season_number и episode_number",
+            },
+            ensure_ascii=False,
+        )
+
+    logger.info(
+        "create_monitor",
+        user_id=user_id,
+        title=title,
+        quality=quality,
+        tracking_mode=tracking_mode,
+        season=season_number,
+        episode=episode_number,
+    )
 
     try:
         async with get_storage() as storage:
@@ -1470,6 +1492,9 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
                 media_type=media_type,
                 quality=quality,
                 auto_download=auto_download,
+                tracking_mode=tracking_mode,
+                season_number=season_number,
+                episode_number=episode_number,
             )
 
             # Sync to active_context memory block
@@ -1478,13 +1503,27 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
             except Exception as e:
                 logger.warning("sync_monitors_to_memory_failed", error=str(e))
 
+            # Build response message based on tracking mode
+            if media_type == "tv":
+                if tracking_mode == "episode":
+                    msg = f"Мониторинг '{title}' S{season_number:02d}E{episode_number:02d} создан"
+                elif season_number:
+                    msg = f"Мониторинг '{title}' сезон {season_number} создан"
+                else:
+                    msg = f"Мониторинг сериала '{title}' создан"
+            else:
+                msg = f"Мониторинг '{title}' создан"
+
             return json.dumps(
                 {
                     "status": "success",
-                    "message": f"Мониторинг '{title}' создан",
+                    "message": msg,
                     "monitor_id": monitor.id,
                     "quality": quality,
                     "auto_download": auto_download,
+                    "tracking_mode": tracking_mode,
+                    "season_number": season_number,
+                    "episode_number": episode_number,
                 },
                 ensure_ascii=False,
             )

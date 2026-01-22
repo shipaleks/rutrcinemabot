@@ -509,7 +509,13 @@ CREATE_MONITOR_TOOL = {
     "name": "create_monitor",
     "description": (
         "Создать мониторинг релиза. "
-        "Бот будет периодически проверять доступность и уведомит, когда найдёт."
+        "Бот будет периодически проверять доступность и уведомит, когда найдёт.\n\n"
+        "Для сериалов (media_type='tv') можно указать режим отслеживания:\n"
+        "- 'season': отслеживать весь сезон целиком (по умолчанию)\n"
+        "- 'episode': отслеживать конкретный эпизод (нужно указать season_number и episode_number)\n\n"
+        "ВАЖНО: Перед созданием мониторинга ОБЯЗАТЕЛЬНО спроси у пользователя:\n"
+        "1. Какое качество нужно (720p, 1080p, 4K)?\n"
+        "2. Для сериалов: отслеживать весь сезон или конкретный эпизод?"
     ),
     "input_schema": {
         "type": "object",
@@ -534,17 +540,30 @@ CREATE_MONITOR_TOOL = {
             },
             "quality": {
                 "type": "string",
-                "description": "Желаемое качество",
+                "description": "Желаемое качество. ОБЯЗАТЕЛЬНО уточни у пользователя перед созданием!",
                 "enum": ["720p", "1080p", "4K"],
-                "default": "1080p",
             },
             "auto_download": {
                 "type": "boolean",
                 "description": "Автоматически скачивать при нахождении",
                 "default": False,
             },
+            "tracking_mode": {
+                "type": "string",
+                "description": "Режим отслеживания для сериалов: season (весь сезон) или episode (конкретный эпизод)",
+                "enum": ["season", "episode"],
+                "default": "season",
+            },
+            "season_number": {
+                "type": "integer",
+                "description": "Номер сезона (для режима episode или отслеживания конкретного сезона)",
+            },
+            "episode_number": {
+                "type": "integer",
+                "description": "Номер эпизода (только для режима episode)",
+            },
         },
-        "required": ["user_id", "title"],
+        "required": ["user_id", "title", "quality"],
     },
 }
 
