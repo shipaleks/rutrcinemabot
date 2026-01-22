@@ -1864,6 +1864,111 @@ def format_torrent_result_message(result: dict[str, Any]) -> str:
     )
 
 
+def format_torrent_card(result: dict[str, Any], result_id: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Format a torrent result as a card with action buttons.
+
+    Args:
+        result: Cached result data.
+        result_id: Unique result identifier.
+
+    Returns:
+        Tuple of (message text, inline keyboard).
+    """
+    title = result.get("title", "Unknown")
+    size = result.get("size", "N/A")
+    seeds = result.get("seeds", 0)
+    quality = result.get("quality", "")
+    source = result.get("source", "unknown")
+
+    # Quality emoji
+    quality_emoji = {
+        "4K": "🎥",
+        "2160p": "🎥",
+        "1080p": "🎬",
+        "720p": "📺",
+        "HDR": "✨",
+    }.get(quality, "🎬")
+
+    # Seeds color indicator
+    if seeds >= 50:
+        seeds_emoji = "🟢"
+    elif seeds >= 10:
+        seeds_emoji = "🟡"
+    else:
+        seeds_emoji = "🔴"
+
+    # Build quality string
+    quality_str = f"{quality} | " if quality else ""
+
+    # Format card text
+    text = (
+        f"{quality_emoji} <b>{title[:60]}</b>\n"
+        f"📀 {quality_str}{size} | {seeds_emoji} Seeds: {seeds}\n"
+        f"📂 {source.title()}"
+    )
+
+    # Build action buttons
+    has_torrent = bool(result.get("torrent_url"))
+
+    row = [
+        InlineKeyboardButton("📋 Магнет", callback_data=f"dl_magnet_{result_id}"),
+    ]
+
+    # "Download" button only if torrent_url available (Rutracker via TorAPI)
+    if has_torrent:
+        row.append(InlineKeyboardButton("📥 Скачать", callback_data=f"dl_torrent_{result_id}"))
+
+    row.append(InlineKeyboardButton("🌐 Seedbox", callback_data=f"dl_seedbox_{result_id}"))
+
+    keyboard = InlineKeyboardMarkup([row])
+
+    return text, keyboard
+
+
+async def send_search_results_cards(
+    bot, chat_id: int, result_ids: list[str], max_results: int = 3
+) -> list[int]:
+    """Send search results as individual card messages.
+
+    Args:
+        bot: Telegram bot instance.
+        chat_id: Chat to send messages to.
+        result_ids: List of cached result IDs.
+        max_results: Maximum number of cards to send.
+
+    Returns:
+        List of sent message IDs.
+    """
+    # Get and sort results by seeds
+    results_with_ids = []
+    for rid in result_ids:
+        result_data = get_cached_result(rid)
+        if result_data:
+            results_with_ids.append((rid, result_data))
+
+    # Sort by seeds descending
+    results_with_ids.sort(key=lambda x: x[1].get("seeds", 0), reverse=True)
+
+    # Limit results
+    results_with_ids = results_with_ids[:max_results]
+
+    sent_messages = []
+    for result_id, result_data in results_with_ids:
+        text, keyboard = format_torrent_card(result_data, result_id)
+        try:
+            msg = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+            sent_messages.append(msg.message_id)
+        except Exception as e:
+            logger.warning("failed_to_send_torrent_card", error=str(e), result_id=result_id)
+
+    return sent_messages
+
+
 # =============================================================================
 # Main Conversation Handler
 # =============================================================================
@@ -2006,39 +2111,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Check for new search results added during this request
         results_after = set(_search_results_cache.keys())
-        new_result_ids = results_after - results_before
+        new_result_ids = list(results_after - results_before)
 
         # Only show buttons if NEW search was performed in this request
         # This prevents showing old buttons when context has changed
         if new_result_ids:
-            # Collect results with all info for sorting and display
-            results_with_info = []
-            for result_id in new_result_ids:
-                result_data = _search_results_cache.get(result_id)
-                if result_data:
-                    results_with_info.append(
-                        {
-                            "id": result_id,
-                            "title": result_data.get("title", "Unknown"),
-                            "seeds": result_data.get("seeds", 0),
-                            "size": result_data.get("size", ""),
-                            "quality": result_data.get("quality", ""),
-                        }
-                    )
-
-            # Sort by seeds descending (best results first)
-            results_with_info.sort(key=lambda x: x.get("seeds", 0), reverse=True)
-
             # Update context with current result IDs for potential re-use
-            conv_context.last_search_result_ids = [r["id"] for r in results_with_info[:10]]
+            conv_context.last_search_result_ids = new_result_ids[:10]
 
-            # Take top 5 for buttons
-            if results_with_info[:5]:
-                keyboard = format_search_results_keyboard(results_with_info[:5])
-                await update.message.reply_text(
-                    "Скачать:",
-                    reply_markup=keyboard,
-                )
+            # Send top-3 results as individual cards with action buttons
+            await send_search_results_cards(
+                context.bot,
+                update.message.chat_id,
+                new_result_ids,
+                max_results=3,
+            )
 
     except Exception as e:
         logger.exception("message_handling_failed", user_id=user.id, error=str(e))
@@ -2226,6 +2313,194 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
                 await query.edit_message_text(f"{title}\n\nMagnet-ссылка:\n{magnet}")
 
 
+async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle magnet button callback - send magnet link as text.
+
+    Args:
+        update: Telegram update object.
+        _context: Callback context (unused).
+    """
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    result_id = query.data.replace("dl_magnet_", "")
+    result = get_cached_result(result_id)
+
+    if not result:
+        await query.answer("Результат не найден", show_alert=True)
+        return
+
+    magnet = result.get("magnet", "")
+    title = result.get("title", "Unknown")
+
+    if not magnet:
+        await query.answer("Магнет-ссылка недоступна", show_alert=True)
+        return
+
+    # Ensure magnet is a string
+    if isinstance(magnet, list):
+        magnet = magnet[0] if magnet else ""
+
+    await query.answer("Магнет-ссылка отправлена")
+
+    # Send magnet as reply to the card message
+    message = query.message
+    if message:
+        if len(magnet) > 3500:
+            # Magnet too long, send as plain text
+            await message.reply_text(
+                f"🔗 Магнет-ссылка для <b>{title[:50]}</b>:", parse_mode="HTML"
+            )
+            await message.reply_text(magnet)
+        else:
+            await message.reply_text(
+                f"🔗 Магнет-ссылка:\n\n<code>{magnet}</code>",
+                parse_mode="HTML",
+            )
+
+    logger.info(
+        "magnet_sent", result_id=result_id, user_id=query.from_user.id if query.from_user else None
+    )
+
+
+async def handle_torrent_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle torrent download button callback - download and send .torrent file.
+
+    Args:
+        update: Telegram update object.
+        _context: Callback context (unused).
+    """
+    import io
+
+    import httpx
+
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    result_id = query.data.replace("dl_torrent_", "")
+    result = get_cached_result(result_id)
+
+    if not result:
+        await query.answer("Результат не найден", show_alert=True)
+        return
+
+    torrent_url = result.get("torrent_url", "")
+    title = result.get("title", "Unknown")
+    magnet = result.get("magnet", "")
+
+    message = query.message
+
+    if torrent_url:
+        await query.answer("Загружаю торрент-файл...")
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(
+                    torrent_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    },
+                )
+                if response.status_code == 200:
+                    # Create safe filename
+                    safe_title = "".join(c for c in title[:50] if c.isalnum() or c in " ._-")
+                    filename = f"{safe_title}.torrent"
+
+                    if message:
+                        await message.reply_document(
+                            document=io.BytesIO(response.content),
+                            filename=filename,
+                            caption="📥 Торрент-файл",
+                        )
+                    logger.info(
+                        "torrent_file_sent",
+                        result_id=result_id,
+                        user_id=query.from_user.id if query.from_user else None,
+                    )
+                    return
+                logger.warning(
+                    "torrent_download_failed",
+                    status=response.status_code,
+                    url=torrent_url,
+                )
+        except Exception as e:
+            logger.warning("torrent_download_error", error=str(e), url=torrent_url)
+
+    # Fallback: show magnet link
+    await query.answer("Торрент-файл недоступен")
+    if message and magnet:
+        if isinstance(magnet, list):
+            magnet = magnet[0] if magnet else ""
+        await message.reply_text(
+            f"📥 Торрент-файл недоступен для этого источника.\n\n"
+            f"🔗 Магнет-ссылка:\n<code>{magnet[:3500]}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle seedbox button callback - send torrent to configured seedbox.
+
+    Args:
+        update: Telegram update object.
+        _context: Callback context (unused).
+    """
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    result_id = query.data.replace("dl_seedbox_", "")
+    result = get_cached_result(result_id)
+
+    if not result:
+        await query.answer("Результат не найден", show_alert=True)
+        return
+
+    magnet = result.get("magnet", "")
+    title = result.get("title", "Unknown")
+
+    if not magnet:
+        await query.answer("Магнет-ссылка недоступна", show_alert=True)
+        return
+
+    # Ensure magnet is a string
+    if isinstance(magnet, list):
+        magnet = magnet[0] if magnet else ""
+
+    await query.answer("Отправляю на seedbox...")
+    message = query.message
+
+    # Try to send to seedbox
+    try:
+        download_result = await send_magnet_to_seedbox(magnet)
+
+        if download_result.get("status") == "sent":
+            if message:
+                await message.reply_text(
+                    f"✅ Торрент добавлен на seedbox\n\n"
+                    f"<b>{title[:60]}</b>\n"
+                    f"📡 {download_result.get('seedbox', 'Unknown')}",
+                    parse_mode="HTML",
+                )
+            logger.info(
+                "seedbox_sent",
+                result_id=result_id,
+                user_id=query.from_user.id if query.from_user else None,
+            )
+            return
+    except Exception as e:
+        logger.warning("seedbox_send_failed", error=str(e))
+
+    # Seedbox not configured or error - show magnet link
+    if message:
+        await message.reply_text(
+            f"⚠️ Seedbox не настроен или недоступен.\n\n"
+            f"🔗 Магнет-ссылка:\n<code>{magnet[:3500]}</code>",
+            parse_mode="HTML",
+        )
+
+
 async def handle_monitor_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle monitoring button callbacks (download, details, cancel).
 
@@ -2276,9 +2551,7 @@ async def _handle_monitor_download(query: Any, telegram_id: int, monitor_id: int
 
         # Check if we have found_data with magnet
         if not monitor.found_data or not monitor.found_data.get("magnet"):
-            await query.edit_message_text(
-                "Данные о релизе не найдены. Попробуйте поиск вручную."
-            )
+            await query.edit_message_text("Данные о релизе не найдены. Попробуйте поиск вручную.")
             return
 
         magnet = monitor.found_data["magnet"]
