@@ -70,6 +70,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/profile — Посмотреть свой профиль\n"
         "/rutracker — Настроить логин Rutracker\n"
         "/settings — Настройки качества и предпочтений\n"
+        "/reset_profile — Очистить профиль и начать заново\n"
         "/help — Эта справка\n\n"
         "**Типовые сценарии:**\n\n"
         "_Поиск фильма:_\n"
@@ -136,6 +137,90 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.exception("profile_handler_failed", user_id=user.id, error=str(e))
         await update.message.reply_text("Не удалось загрузить профиль. Попробуйте позже.")
+
+
+async def reset_profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /reset_profile command.
+
+    Clears all user profile data including:
+    - Legacy profile_md
+    - Core memory blocks
+    - Memory notes
+    - Conversation sessions
+
+    Args:
+        update: Telegram update object
+        context: Callback context
+    """
+    user = update.effective_user
+
+    logger.info("reset_profile_command", user_id=user.id)
+
+    try:
+        async with get_storage() as storage:
+            db_user = await storage.get_user_by_telegram_id(user.id)
+            if not db_user:
+                await update.message.reply_text("Пользователь не найден.")
+                return
+
+            # Clear legacy profile
+            profile = await storage.get_profile(db_user.id)
+            if profile:
+                await storage.update_profile(db_user.id, "")
+                logger.info("profile_cleared", user_id=user.id)
+
+            # Clear core memory blocks
+            blocks_deleted = 0
+            try:
+                blocks = await storage.get_all_core_memory_blocks(db_user.id)
+                for block in blocks:
+                    await storage.update_core_memory_block(db_user.id, block.block_name, "")
+                    blocks_deleted += 1
+            except Exception as e:
+                logger.warning("clear_memory_blocks_error", error=str(e))
+
+            # Clear memory notes
+            notes_deleted = 0
+            try:
+                notes = await storage.search_memory_notes(db_user.id, "", limit=1000)
+                for note in notes:
+                    await storage.archive_memory_note(note.id)
+                    notes_deleted += 1
+            except Exception as e:
+                logger.warning("clear_memory_notes_error", error=str(e))
+
+            # Clear conversation sessions
+            sessions_deleted = 0
+            try:
+                sessions = await storage.get_recent_sessions(db_user.id, limit=1000)
+                for session in sessions:
+                    await storage.end_session(session.id, summary="Reset by user")
+                    sessions_deleted += 1
+            except Exception as e:
+                logger.warning("clear_sessions_error", error=str(e))
+
+            await update.message.reply_text(
+                "**Профиль очищен**\n\n"
+                f"• Legacy профиль: очищен\n"
+                f"• Memory блоки: {blocks_deleted}\n"
+                f"• Memory заметки: {notes_deleted}\n"
+                f"• Сессии: {sessions_deleted}\n\n"
+                "Теперь бот начнёт изучать ваши предпочтения заново.",
+                parse_mode="Markdown",
+            )
+            logger.info(
+                "profile_reset_complete",
+                user_id=user.id,
+                blocks=blocks_deleted,
+                notes=notes_deleted,
+                sessions=sessions_deleted,
+            )
+
+    except Exception as e:
+        logger.exception("reset_profile_failed", user_id=user.id, error=str(e))
+        await update.message.reply_text(
+            "Не удалось очистить профиль. Попробуйте позже."
+        )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -23,7 +23,7 @@ from telegram.ext import (
 )
 
 from src.bot.conversation import handle_download_callback, handle_message
-from src.bot.handlers import error_handler, help_handler, profile_handler
+from src.bot.handlers import error_handler, help_handler, profile_handler, reset_profile_handler
 from src.bot.onboarding import (
     get_onboarding_conversation_handler,
     onboarding_start_handler,
@@ -72,6 +72,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("help", help_handler))
     application.add_handler(CommandHandler("profile", profile_handler))
     application.add_handler(CommandHandler("settings", settings_handler))
+    application.add_handler(CommandHandler("reset_profile", reset_profile_handler))
     application.add_handler(CommandHandler("health", health_check))
 
     # Register Rutracker credentials conversation handler
