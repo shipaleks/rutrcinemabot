@@ -78,6 +78,30 @@ class ReleaseChecker:
 
         self._last_request_time = time.time()
 
+    def _build_tv_search_query(self, monitor: Any) -> str:
+        """Build search query for TV series based on tracking mode.
+
+        Args:
+            monitor: Monitor object with title, tracking_mode, season/episode numbers
+
+        Returns:
+            Search query string
+        """
+        title = monitor.title
+        tracking_mode = getattr(monitor, "tracking_mode", "season")
+        season_number = getattr(monitor, "season_number", None)
+        episode_number = getattr(monitor, "episode_number", None)
+
+        if tracking_mode == "episode" and season_number and episode_number:
+            # Specific episode: "Breaking Bad S01E05"
+            return f"{title} S{season_number:02d}E{episode_number:02d}"
+        if season_number:
+            # Specific season: "Breaking Bad S01" or "Breaking Bad Season 1"
+            # Try both formats for better matching
+            return f"{title} S{season_number:02d}"
+        # Whole series - just the title
+        return title
+
     async def check_monitor(
         self,
         monitor: Any,  # Monitor model from storage
@@ -90,20 +114,33 @@ class ReleaseChecker:
         Returns:
             FoundRelease if found, None otherwise
         """
+        tracking_mode = getattr(monitor, "tracking_mode", "season")
+        season_number = getattr(monitor, "season_number", None)
+        episode_number = getattr(monitor, "episode_number", None)
+
         logger.info(
             "checking_monitor",
             monitor_id=monitor.id,
             title=monitor.title,
             quality=monitor.quality,
             media_type=monitor.media_type,
+            tracking_mode=tracking_mode,
+            season=season_number,
+            episode=episode_number,
         )
 
         # Determine category based on media_type
         category = "tv_show" if monitor.media_type == "tv" else "movie"
 
+        # Build search query - for TV series, include season/episode info
+        if monitor.media_type == "tv":
+            search_title = self._build_tv_search_query(monitor)
+        else:
+            search_title = monitor.title
+
         # Try Rutracker first
         result = await self._search_rutracker(
-            monitor.title,
+            search_title,
             monitor.quality,
             category=category,
         )
@@ -123,7 +160,7 @@ class ReleaseChecker:
 
         # Fallback to PirateBay
         result = await self._search_piratebay(
-            monitor.title,
+            search_title,
             monitor.quality,
         )
 

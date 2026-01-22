@@ -726,8 +726,24 @@ class BaseStorage(ABC):
         quality: str = "1080p",
         auto_download: bool = False,
         release_date: datetime | None = None,
+        tracking_mode: str = "season",
+        season_number: int | None = None,
+        episode_number: int | None = None,
     ) -> Monitor:
-        """Create a release monitor."""
+        """Create a release monitor.
+
+        Args:
+            user_id: Internal user ID
+            title: Title to search for
+            tmdb_id: Optional TMDB ID
+            media_type: 'movie' or 'tv'
+            quality: Desired quality (720p, 1080p, 4K)
+            auto_download: Auto-download when found
+            release_date: Expected release date
+            tracking_mode: For TV: 'season' (whole season) or 'episode' (specific ep)
+            season_number: Season number for TV tracking
+            episode_number: Episode number for 'episode' tracking mode
+        """
         pass
 
     @abstractmethod
@@ -1273,6 +1289,12 @@ class SQLiteStorage(BaseStorage):
             # Migration 16: Add found_data to monitors (stores magnet, size, seeds when found)
             """
             ALTER TABLE monitors ADD COLUMN found_data TEXT;
+            """,
+            # Migration 17: Add TV series episode tracking to monitors
+            """
+            ALTER TABLE monitors ADD COLUMN season_number INTEGER;
+            ALTER TABLE monitors ADD COLUMN episode_number INTEGER;
+            ALTER TABLE monitors ADD COLUMN tracking_mode TEXT DEFAULT 'season';
             """,
         ]
 
@@ -2069,6 +2091,9 @@ class SQLiteStorage(BaseStorage):
         quality: str = "1080p",
         auto_download: bool = False,
         release_date: datetime | None = None,
+        tracking_mode: str = "season",
+        season_number: int | None = None,
+        episode_number: int | None = None,
     ) -> Monitor:
         """Create a release monitor."""
         now = datetime.now(UTC)
@@ -2076,8 +2101,9 @@ class SQLiteStorage(BaseStorage):
         cursor = await self.db.execute(
             """
             INSERT INTO monitors
-                (user_id, title, tmdb_id, media_type, quality, auto_download, status, release_date, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                (user_id, title, tmdb_id, media_type, quality, auto_download, status,
+                 release_date, tracking_mode, season_number, episode_number, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -2087,6 +2113,9 @@ class SQLiteStorage(BaseStorage):
                 quality,
                 1 if auto_download else 0,
                 release_date.isoformat() if release_date else None,
+                tracking_mode,
+                season_number,
+                episode_number,
                 now.isoformat(),
             ),
         )
@@ -2096,7 +2125,14 @@ class SQLiteStorage(BaseStorage):
         if monitor_id is None:
             raise RuntimeError("Failed to create monitor")
 
-        logger.info("monitor_created", user_id=user_id, title=title)
+        logger.info(
+            "monitor_created",
+            user_id=user_id,
+            title=title,
+            tracking_mode=tracking_mode,
+            season=season_number,
+            episode=episode_number,
+        )
 
         return Monitor(
             id=monitor_id,
@@ -2111,6 +2147,9 @@ class SQLiteStorage(BaseStorage):
             release_date=release_date,
             last_checked=None,
             created_at=now,
+            tracking_mode=tracking_mode,
+            season_number=season_number,
+            episode_number=episode_number,
         )
 
     async def get_monitors(
@@ -2219,6 +2258,16 @@ class SQLiteStorage(BaseStorage):
             else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             found_data=found_data,
+            # TV series episode tracking
+            tracking_mode=row["tracking_mode"]
+            if "tracking_mode" in row.keys() and row["tracking_mode"]
+            else "season",
+            season_number=row["season_number"]
+            if "season_number" in row.keys()
+            else None,
+            episode_number=row["episode_number"]
+            if "episode_number" in row.keys()
+            else None,
         )
 
     # -------------------------------------------------------------------------
@@ -3116,6 +3165,12 @@ class PostgresStorage(BaseStorage):
             """
             ALTER TABLE monitors ADD COLUMN IF NOT EXISTS found_data TEXT;
             """,
+            # Migration 17: Add TV series episode tracking to monitors
+            """
+            ALTER TABLE monitors ADD COLUMN IF NOT EXISTS season_number INTEGER;
+            ALTER TABLE monitors ADD COLUMN IF NOT EXISTS episode_number INTEGER;
+            ALTER TABLE monitors ADD COLUMN IF NOT EXISTS tracking_mode TEXT DEFAULT 'season';
+            """,
         ]
 
         async with self.pool.acquire() as conn:
@@ -3874,14 +3929,18 @@ class PostgresStorage(BaseStorage):
         quality: str = "1080p",
         auto_download: bool = False,
         release_date: datetime | None = None,
+        tracking_mode: str = "season",
+        season_number: int | None = None,
+        episode_number: int | None = None,
     ) -> Monitor:
         """Create a release monitor."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO monitors
-                    (user_id, title, tmdb_id, media_type, quality, auto_download, release_date)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    (user_id, title, tmdb_id, media_type, quality, auto_download,
+                     release_date, tracking_mode, season_number, episode_number)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING *
                 """,
                 user_id,
@@ -3891,9 +3950,19 @@ class PostgresStorage(BaseStorage):
                 quality,
                 auto_download,
                 release_date,
+                tracking_mode,
+                season_number,
+                episode_number,
             )
 
-        logger.info("monitor_created", user_id=user_id, title=title)
+        logger.info(
+            "monitor_created",
+            user_id=user_id,
+            title=title,
+            tracking_mode=tracking_mode,
+            season=season_number,
+            episode=episode_number,
+        )
         return self._row_to_monitor(row)
 
     async def get_monitors(
@@ -4001,6 +4070,10 @@ class PostgresStorage(BaseStorage):
             last_checked=row.get("last_checked"),
             created_at=row["created_at"],
             found_data=found_data,
+            # TV series episode tracking
+            tracking_mode=row.get("tracking_mode") or "season",
+            season_number=row.get("season_number"),
+            episode_number=row.get("episode_number"),
         )
 
     # -------------------------------------------------------------------------
