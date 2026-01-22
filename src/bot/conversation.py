@@ -1969,13 +1969,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         results_after = set(_search_results_cache.keys())
         new_result_ids = results_after - results_before
 
-        if new_result_ids:
-            # Collect new results with all info for sorting and display
-            new_results_with_info = []
-            for result_id in new_result_ids:
+        # Determine which results to show buttons for
+        result_ids_to_show = list(new_result_ids) if new_result_ids else []
+
+        # If no new results but we have last search results, show those again
+        # (useful when user asks to clarify/refine without new search)
+        if not result_ids_to_show and conv_context.last_search_result_ids:
+            # Check if previous results still in cache (not expired)
+            valid_previous_ids = [
+                rid for rid in conv_context.last_search_result_ids if rid in _search_results_cache
+            ]
+            if valid_previous_ids:
+                result_ids_to_show = valid_previous_ids[:10]  # Keep last 10 results
+
+        if result_ids_to_show:
+            # Collect results with all info for sorting and display
+            results_with_info = []
+            for result_id in result_ids_to_show:
                 result_data = _search_results_cache.get(result_id)
                 if result_data:
-                    new_results_with_info.append(
+                    results_with_info.append(
                         {
                             "id": result_id,
                             "title": result_data.get("title", "Unknown"),
@@ -1986,11 +1999,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     )
 
             # Sort by seeds descending (best results first)
-            new_results_with_info.sort(key=lambda x: x.get("seeds", 0), reverse=True)
+            results_with_info.sort(key=lambda x: x.get("seeds", 0), reverse=True)
+
+            # Update context with current result IDs
+            if new_result_ids:
+                conv_context.last_search_result_ids = [r["id"] for r in results_with_info[:10]]
 
             # Take top 5 for buttons
-            if new_results_with_info[:5]:
-                keyboard = format_search_results_keyboard(new_results_with_info[:5])
+            if results_with_info[:5]:
+                keyboard = format_search_results_keyboard(results_with_info[:5])
                 await update.message.reply_text(
                     "Скачать:",
                     reply_markup=keyboard,
