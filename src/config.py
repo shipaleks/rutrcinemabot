@@ -45,6 +45,12 @@ class Settings(BaseSettings):
         description="Kinopoisk unofficial API token",
     )
 
+    # Optional: OMDB API (for IMDB and Rotten Tomatoes ratings)
+    omdb_api_key: str | None = Field(
+        default=None,
+        description="OMDB API key for IMDB/RT ratings (optional, defaults to demo key)",
+    )
+
     # Required: Security
     encryption_key: SecretStr = Field(
         ...,

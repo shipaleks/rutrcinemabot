@@ -21,6 +21,7 @@ from src.bot.streaming import send_streaming_message
 from src.config import settings
 from src.logger import get_logger
 from src.media.kinopoisk import KinopoiskClient, KinopoiskError
+from src.media.omdb import OMDBClient, OMDBError
 from src.media.tmdb import TMDBClient, TMDBError
 from src.search.piratebay import PirateBayClient, PirateBayError
 from src.search.rutracker import RutrackerClient, RutrackerError
@@ -411,12 +412,12 @@ async def handle_tmdb_search(tool_input: dict[str, Any]) -> str:
 
             results = results[:5]  # Limit results
 
-            # Format results for Claude
+            # Format results for Claude with OMDB ratings
             formatted_results = []
-            for result in results:
-                overview = result.overview or ""
-                formatted_results.append(
-                    {
+            async with OMDBClient(api_key=settings.omdb_api_key) as omdb_client:
+                for result in results:
+                    overview = result.overview or ""
+                    result_data = {
                         "id": result.id,
                         "title": result.title,
                         "media_type": result.media_type,
@@ -425,7 +426,24 @@ async def handle_tmdb_search(tool_input: dict[str, Any]) -> str:
                         "vote_average": result.vote_average,
                         "poster_url": result.get_poster_url(),
                     }
-                )
+
+                    # Try to fetch OMDB ratings (IMDB, RT, Metascore)
+                    try:
+                        omdb_result = await omdb_client.search_by_title(
+                            result.title, year=result.get_year()
+                        )
+                        result_data["imdb_rating"] = omdb_result.imdb_rating
+                        result_data["rt_rating"] = omdb_client.get_rotten_tomatoes_rating(
+                            omdb_result
+                        )
+                        result_data["metascore"] = omdb_result.metascore
+                    except OMDBError:
+                        # OMDB not available or movie not found - continue without ratings
+                        result_data["imdb_rating"] = None
+                        result_data["rt_rating"] = None
+                        result_data["metascore"] = None
+
+                    formatted_results.append(result_data)
 
             return json.dumps(
                 {
