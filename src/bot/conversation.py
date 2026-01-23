@@ -2313,35 +2313,122 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
                 await query.edit_message_text(f"{title}\n\nMagnet-ссылка:\n{magnet}")
 
 
-async def _fetch_magnet_from_torapi(torrent_id: str, source: str) -> str | None:
-    """Fetch magnet link from TorAPI details endpoint.
-
-    TorAPI doesn't return magnet in search results, only in details.
-    This function fetches details to get the magnet link.
+def _extract_info_hash_from_torrent(torrent_data: bytes) -> str | None:
+    """Extract info_hash from torrent file data using simple bencode parser.
 
     Args:
-        torrent_id: Torrent ID from search results.
-        source: Source tracker (e.g., 'rutracker').
+        torrent_data: Raw torrent file bytes.
 
     Returns:
-        Magnet link or None if not available.
+        Info hash as hex string or None if extraction fails.
     """
-    if source != "rutracker" or not torrent_id:
+    import hashlib
+
+    def decode_bencode(data: bytes, idx: int = 0) -> tuple[Any, int]:
+        """Simple bencode decoder."""
+        if data[idx : idx + 1] == b"d":
+            # Dictionary
+            idx += 1
+            result = {}
+            while data[idx : idx + 1] != b"e":
+                key, idx = decode_bencode(data, idx)
+                value, idx = decode_bencode(data, idx)
+                if isinstance(key, bytes):
+                    key = key.decode("utf-8", errors="replace")
+                result[key] = value
+            return result, idx + 1
+        if data[idx : idx + 1] == b"l":
+            # List
+            idx += 1
+            result = []
+            while data[idx : idx + 1] != b"e":
+                item, idx = decode_bencode(data, idx)
+                result.append(item)
+            return result, idx + 1
+        if data[idx : idx + 1] == b"i":
+            # Integer
+            idx += 1
+            end = data.index(b"e", idx)
+            return int(data[idx:end]), end + 1
+        if data[idx : idx + 1].isdigit():
+            # String
+            colon = data.index(b":", idx)
+            length = int(data[idx:colon])
+            start = colon + 1
+            return data[start : start + length], start + length
+        raise ValueError(f"Invalid bencode at {idx}")
+
+    try:
+        decoded, _ = decode_bencode(torrent_data)
+        if not isinstance(decoded, dict) or "info" not in decoded:
+            return None
+
+        # Re-encode info dict to get its bencoded form for hashing
+        def encode_bencode(obj) -> bytes:
+            if isinstance(obj, dict):
+                items = sorted(obj.items())
+                encoded = b"d"
+                for k, v in items:
+                    if isinstance(k, str):
+                        k = k.encode("utf-8")
+                    encoded += encode_bencode(k) + encode_bencode(v)
+                return encoded + b"e"
+            if isinstance(obj, list):
+                return b"l" + b"".join(encode_bencode(i) for i in obj) + b"e"
+            if isinstance(obj, int):
+                return f"i{obj}e".encode()
+            if isinstance(obj, bytes):
+                return f"{len(obj)}:".encode() + obj
+            if isinstance(obj, str):
+                encoded = obj.encode("utf-8")
+                return f"{len(encoded)}:".encode() + encoded
+            raise ValueError(f"Cannot encode {type(obj)}")
+
+        info_bencoded = encode_bencode(decoded["info"])
+        return hashlib.sha1(info_bencoded).hexdigest()
+    except Exception as e:
+        logger.warning("bencode_parse_failed", error=str(e))
+        return None
+
+
+async def _fetch_magnet_from_torrent_url(torrent_url: str, title: str) -> str | None:
+    """Download torrent file and extract magnet link.
+
+    Args:
+        torrent_url: URL to download .torrent file.
+        title: Torrent title for magnet display name.
+
+    Returns:
+        Magnet link or None if extraction fails.
+    """
+    import urllib.parse
+
+    import httpx
+
+    if not torrent_url:
         return None
 
     try:
-        from src.search.torapi import TorAPIClient, TorAPIProvider
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(
+                torrent_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                },
+            )
+            if response.status_code != 200:
+                logger.warning("torrent_download_failed", status=response.status_code)
+                return None
 
-        async with TorAPIClient() as torapi:
-            details = await torapi.get_details(torrent_id, TorAPIProvider.RUTRACKER)
-            if details:
-                # TorAPI returns magnet in details response
-                magnet = details.get("Magnet") or details.get("magnet")
-                if magnet:
-                    logger.info("magnet_fetched_from_torapi", torrent_id=torrent_id)
-                    return magnet
+            info_hash = _extract_info_hash_from_torrent(response.content)
+            if info_hash:
+                # Build magnet link
+                encoded_title = urllib.parse.quote(title[:100])
+                magnet = f"magnet:?xt=urn:btih:{info_hash}&dn={encoded_title}"
+                logger.info("magnet_extracted_from_torrent", info_hash=info_hash[:8])
+                return magnet
     except Exception as e:
-        logger.warning("torapi_fetch_magnet_failed", error=str(e), torrent_id=torrent_id)
+        logger.warning("magnet_extraction_failed", error=str(e))
 
     return None
 
@@ -2373,14 +2460,13 @@ async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
 
-    # If magnet is empty, try to fetch from TorAPI details
+    # If magnet is empty, try to extract from torrent file
     if not magnet:
-        torrent_id = result.get("torrent_id", "")
-        source = result.get("source", "")
+        torrent_url = result.get("torrent_url", "")
 
         await query.answer("Загружаю магнет-ссылку...")
 
-        magnet = await _fetch_magnet_from_torapi(torrent_id, source)
+        magnet = await _fetch_magnet_from_torrent_url(torrent_url, title)
 
         if magnet:
             # Update cache with fetched magnet
@@ -2480,10 +2566,9 @@ async def handle_torrent_callback(update: Update, _context: ContextTypes.DEFAULT
         magnet = magnet[0] if magnet else ""
 
     if not magnet:
-        # Try to fetch magnet from TorAPI
-        torrent_id = result.get("torrent_id", "")
-        source = result.get("source", "")
-        magnet = await _fetch_magnet_from_torapi(torrent_id, source)
+        # Try to extract magnet from torrent file
+        torrent_url_fallback = result.get("torrent_url", "")
+        magnet = await _fetch_magnet_from_torrent_url(torrent_url_fallback, title)
         if magnet:
             result["magnet"] = magnet
             cache_search_result(result_id, result)
@@ -2528,14 +2613,13 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
 
-    # If magnet is empty, try to fetch from TorAPI details
+    # If magnet is empty, try to extract from torrent file
     if not magnet:
-        torrent_id = result.get("torrent_id", "")
-        source = result.get("source", "")
+        torrent_url = result.get("torrent_url", "")
 
         await query.answer("Загружаю магнет-ссылку...")
 
-        magnet = await _fetch_magnet_from_torapi(torrent_id, source)
+        magnet = await _fetch_magnet_from_torrent_url(torrent_url, title)
 
         if magnet:
             # Update cache with fetched magnet
