@@ -2313,8 +2313,43 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
                 await query.edit_message_text(f"{title}\n\nMagnet-ссылка:\n{magnet}")
 
 
+async def _fetch_magnet_from_torapi(torrent_id: str, source: str) -> str | None:
+    """Fetch magnet link from TorAPI details endpoint.
+
+    TorAPI doesn't return magnet in search results, only in details.
+    This function fetches details to get the magnet link.
+
+    Args:
+        torrent_id: Torrent ID from search results.
+        source: Source tracker (e.g., 'rutracker').
+
+    Returns:
+        Magnet link or None if not available.
+    """
+    if source != "rutracker" or not torrent_id:
+        return None
+
+    try:
+        from src.search.torapi import TorAPIClient, TorAPIProvider
+
+        async with TorAPIClient() as torapi:
+            details = await torapi.get_details(torrent_id, TorAPIProvider.RUTRACKER)
+            if details:
+                # TorAPI returns magnet in details response
+                magnet = details.get("Magnet") or details.get("magnet")
+                if magnet:
+                    logger.info("magnet_fetched_from_torapi", torrent_id=torrent_id)
+                    return magnet
+    except Exception as e:
+        logger.warning("torapi_fetch_magnet_failed", error=str(e), torrent_id=torrent_id)
+
+    return None
+
+
 async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle magnet button callback - send magnet link as text.
+
+    If magnet is not in cache, fetches it from TorAPI details endpoint.
 
     Args:
         update: Telegram update object.
@@ -2334,15 +2369,28 @@ async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_
     magnet = result.get("magnet", "")
     title = result.get("title", "Unknown")
 
-    if not magnet:
-        await query.answer("Магнет-ссылка недоступна", show_alert=True)
-        return
-
     # Ensure magnet is a string
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
 
-    await query.answer("Магнет-ссылка отправлена")
+    # If magnet is empty, try to fetch from TorAPI details
+    if not magnet:
+        torrent_id = result.get("torrent_id", "")
+        source = result.get("source", "")
+
+        await query.answer("Загружаю магнет-ссылку...")
+
+        magnet = await _fetch_magnet_from_torapi(torrent_id, source)
+
+        if magnet:
+            # Update cache with fetched magnet
+            result["magnet"] = magnet
+            cache_search_result(result_id, result)
+        else:
+            await query.answer("Магнет-ссылка недоступна", show_alert=True)
+            return
+    else:
+        await query.answer("Магнет-ссылка отправлена")
 
     # Send magnet as reply to the card message
     message = query.message
@@ -2427,20 +2475,36 @@ async def handle_torrent_callback(update: Update, _context: ContextTypes.DEFAULT
         except Exception as e:
             logger.warning("torrent_download_error", error=str(e), url=torrent_url)
 
-    # Fallback: show magnet link
+    # Fallback: show magnet link (with lazy loading if needed)
+    if isinstance(magnet, list):
+        magnet = magnet[0] if magnet else ""
+
+    if not magnet:
+        # Try to fetch magnet from TorAPI
+        torrent_id = result.get("torrent_id", "")
+        source = result.get("source", "")
+        magnet = await _fetch_magnet_from_torapi(torrent_id, source)
+        if magnet:
+            result["magnet"] = magnet
+            cache_search_result(result_id, result)
+
     await query.answer("Торрент-файл недоступен")
     if message and magnet:
-        if isinstance(magnet, list):
-            magnet = magnet[0] if magnet else ""
         await message.reply_text(
             f"📥 Торрент-файл недоступен для этого источника.\n\n"
             f"🔗 Магнет-ссылка:\n<code>{magnet[:3500]}</code>",
             parse_mode="HTML",
         )
+    elif message:
+        await message.reply_text(
+            "📥 Торрент-файл и магнет-ссылка недоступны для этого источника.",
+        )
 
 
 async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle seedbox button callback - send torrent to configured seedbox.
+
+    If magnet is not in cache, fetches it from TorAPI details endpoint.
 
     Args:
         update: Telegram update object.
@@ -2460,13 +2524,26 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
     magnet = result.get("magnet", "")
     title = result.get("title", "Unknown")
 
-    if not magnet:
-        await query.answer("Магнет-ссылка недоступна", show_alert=True)
-        return
-
     # Ensure magnet is a string
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
+
+    # If magnet is empty, try to fetch from TorAPI details
+    if not magnet:
+        torrent_id = result.get("torrent_id", "")
+        source = result.get("source", "")
+
+        await query.answer("Загружаю магнет-ссылку...")
+
+        magnet = await _fetch_magnet_from_torapi(torrent_id, source)
+
+        if magnet:
+            # Update cache with fetched magnet
+            result["magnet"] = magnet
+            cache_search_result(result_id, result)
+        else:
+            await query.answer("Магнет-ссылка недоступна", show_alert=True)
+            return
 
     await query.answer("Отправляю на seedbox...")
     message = query.message

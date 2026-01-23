@@ -25,8 +25,11 @@ logger = structlog.get_logger(__name__)
 # Conversation states
 WAITING_LETTERBOXD_FILE = 1
 WAITING_MOVIES = 2
-WAITING_RUTRACKER_USER = 3
-WAITING_RUTRACKER_PASS = 4
+WAITING_GENRES = 3
+WAITING_AVOID_GENRES = 4
+WAITING_STYLE = 5
+WAITING_RUTRACKER_USER = 6
+WAITING_RUTRACKER_PASS = 7
 
 
 # =============================================================================
@@ -73,6 +76,22 @@ MOVIES_QUESTION = """**Любимые фильмы**
 
 Просто напиши названия через запятую."""
 
+GENRES_QUESTION = """**Любимые жанры**
+
+Выбери жанры, которые тебе нравятся. Можно выбрать несколько.
+
+Когда закончишь, нажми "Далее"."""
+
+AVOID_GENRES_QUESTION = """**Избегать жанры**
+
+Есть ли жанры, которые ты не хочешь видеть в рекомендациях?
+
+Можно пропустить, если таких нет."""
+
+STYLE_QUESTION = """**Стиль общения**
+
+Как подробно мне отвечать на твои вопросы?"""
+
 RUTRACKER_QUESTION = """**Rutracker**
 
 Для поиска на Rutracker нужна авторизация. Если у тебя есть аккаунт, введи логин.
@@ -98,7 +117,7 @@ SETUP_COMPLETE = """**Готово**
 Настройки сохранены{letterboxd_note}{movies_note}{rutracker_note}
 
 Качество: {quality}
-Аудио: {audio}
+Аудио: {audio}{genres_note}{style_note}
 
 Теперь просто напиши, что хочешь посмотреть. Для изменения настроек: /settings"""
 
@@ -158,6 +177,86 @@ def get_audio_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("English", callback_data="onboard_audio_en"),
                 InlineKeyboardButton("Оригинал", callback_data="onboard_audio_original"),
             ],
+        ]
+    )
+
+
+# Available genres for selection
+GENRE_OPTIONS = [
+    ("action", "Боевики"),
+    ("thriller", "Триллеры"),
+    ("drama", "Драмы"),
+    ("comedy", "Комедии"),
+    ("scifi", "Sci-Fi"),
+    ("fantasy", "Фэнтези"),
+    ("horror", "Хорроры"),
+    ("documentary", "Документальные"),
+]
+
+
+def get_genres_keyboard(selected: set[str] | None = None) -> InlineKeyboardMarkup:
+    """Genre multi-select keyboard."""
+    selected = selected or set()
+    rows = []
+
+    # 2 genres per row
+    for i in range(0, len(GENRE_OPTIONS), 2):
+        row = []
+        for genre_id, genre_name in GENRE_OPTIONS[i : i + 2]:
+            check = "✓ " if genre_id in selected else ""
+            row.append(
+                InlineKeyboardButton(
+                    f"{check}{genre_name}", callback_data=f"onboard_genre_{genre_id}"
+                )
+            )
+        rows.append(row)
+
+    # Next/Skip buttons
+    rows.append(
+        [
+            InlineKeyboardButton("Далее →", callback_data="onboard_genres_done"),
+            InlineKeyboardButton("Пропустить", callback_data="onboard_skip_step"),
+        ]
+    )
+
+    return InlineKeyboardMarkup(rows)
+
+
+def get_avoid_genres_keyboard(selected: set[str] | None = None) -> InlineKeyboardMarkup:
+    """Avoid genres multi-select keyboard."""
+    selected = selected or set()
+    rows = []
+
+    # 2 genres per row
+    for i in range(0, len(GENRE_OPTIONS), 2):
+        row = []
+        for genre_id, genre_name in GENRE_OPTIONS[i : i + 2]:
+            check = "✗ " if genre_id in selected else ""
+            row.append(
+                InlineKeyboardButton(
+                    f"{check}{genre_name}", callback_data=f"onboard_avoid_{genre_id}"
+                )
+            )
+        rows.append(row)
+
+    # Next/Skip buttons
+    rows.append(
+        [
+            InlineKeyboardButton("Далее →", callback_data="onboard_avoid_done"),
+            InlineKeyboardButton("Пропустить", callback_data="onboard_skip_step"),
+        ]
+    )
+
+    return InlineKeyboardMarkup(rows)
+
+
+def get_style_keyboard() -> InlineKeyboardMarkup:
+    """Communication style keyboard."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Кратко", callback_data="onboard_style_brief")],
+            [InlineKeyboardButton("Стандартно", callback_data="onboard_style_normal")],
+            [InlineKeyboardButton("Подробно", callback_data="onboard_style_detailed")],
         ]
     )
 
@@ -254,6 +353,29 @@ async def onboarding_callback_handler(
         if callback == "onboard_skip_step":
             return await _skip_current_step(query, context)
 
+        # Genre selection (multi-select toggle)
+        if callback.startswith("onboard_genre_"):
+            genre = callback.replace("onboard_genre_", "")
+            return await _toggle_genre(query, context, genre)
+
+        # Genre selection done
+        if callback == "onboard_genres_done":
+            return await _genres_done(query, context)
+
+        # Avoid genre selection (multi-select toggle)
+        if callback.startswith("onboard_avoid_"):
+            genre = callback.replace("onboard_avoid_", "")
+            return await _toggle_avoid_genre(query, context, genre)
+
+        # Avoid genre selection done
+        if callback == "onboard_avoid_done":
+            return await _avoid_genres_done(query, context)
+
+        # Style selection
+        if callback.startswith("onboard_style_"):
+            style = callback.replace("onboard_style_", "")
+            return await _save_style(query, context, style)
+
         # Quality selection
         if callback.startswith("onboard_quality_"):
             quality = callback.replace("onboard_quality_", "")
@@ -305,6 +427,41 @@ async def _skip_current_step(query, context: ContextTypes.DEFAULT_TYPE) -> int |
         return WAITING_MOVIES
 
     if step == "movies":
+        # Move to genres
+        if context.user_data is not None:
+            context.user_data["setup_step"] = "genres"
+            context.user_data["selected_genres"] = set()
+        await query.edit_message_text(
+            GENRES_QUESTION,
+            parse_mode="Markdown",
+            reply_markup=get_genres_keyboard(),
+        )
+        return WAITING_GENRES
+
+    if step == "genres":
+        # Move to avoid genres
+        if context.user_data is not None:
+            context.user_data["setup_step"] = "avoid_genres"
+            context.user_data["avoid_genres"] = set()
+        await query.edit_message_text(
+            AVOID_GENRES_QUESTION,
+            parse_mode="Markdown",
+            reply_markup=get_avoid_genres_keyboard(),
+        )
+        return WAITING_AVOID_GENRES
+
+    if step == "avoid_genres":
+        # Move to style
+        if context.user_data is not None:
+            context.user_data["setup_step"] = "style"
+        await query.edit_message_text(
+            STYLE_QUESTION,
+            parse_mode="Markdown",
+            reply_markup=get_style_keyboard(),
+        )
+        return WAITING_STYLE
+
+    if step == "style":
         # Move to Rutracker
         if context.user_data is not None:
             context.user_data["setup_step"] = "rutracker"
@@ -329,6 +486,95 @@ async def _skip_current_step(query, context: ContextTypes.DEFAULT_TYPE) -> int |
     return None
 
 
+async def _toggle_genre(query, context: ContextTypes.DEFAULT_TYPE, genre: str) -> int:
+    """Toggle a genre selection."""
+    if context.user_data is None:
+        context.user_data = {}
+
+    selected = context.user_data.get("selected_genres", set())
+    if not isinstance(selected, set):
+        selected = set(selected)
+
+    if genre in selected:
+        selected.discard(genre)
+    else:
+        selected.add(genre)
+
+    context.user_data["selected_genres"] = selected
+
+    await query.edit_message_text(
+        GENRES_QUESTION,
+        parse_mode="Markdown",
+        reply_markup=get_genres_keyboard(selected),
+    )
+    return WAITING_GENRES
+
+
+async def _genres_done(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Finish genre selection and move to avoid genres."""
+    if context.user_data is not None:
+        context.user_data["setup_step"] = "avoid_genres"
+        context.user_data["avoid_genres"] = set()
+
+    await query.edit_message_text(
+        AVOID_GENRES_QUESTION,
+        parse_mode="Markdown",
+        reply_markup=get_avoid_genres_keyboard(),
+    )
+    return WAITING_AVOID_GENRES
+
+
+async def _toggle_avoid_genre(query, context: ContextTypes.DEFAULT_TYPE, genre: str) -> int:
+    """Toggle an avoid genre selection."""
+    if context.user_data is None:
+        context.user_data = {}
+
+    selected = context.user_data.get("avoid_genres", set())
+    if not isinstance(selected, set):
+        selected = set(selected)
+
+    if genre in selected:
+        selected.discard(genre)
+    else:
+        selected.add(genre)
+
+    context.user_data["avoid_genres"] = selected
+
+    await query.edit_message_text(
+        AVOID_GENRES_QUESTION,
+        parse_mode="Markdown",
+        reply_markup=get_avoid_genres_keyboard(selected),
+    )
+    return WAITING_AVOID_GENRES
+
+
+async def _avoid_genres_done(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Finish avoid genre selection and move to style."""
+    if context.user_data is not None:
+        context.user_data["setup_step"] = "style"
+
+    await query.edit_message_text(
+        STYLE_QUESTION,
+        parse_mode="Markdown",
+        reply_markup=get_style_keyboard(),
+    )
+    return WAITING_STYLE
+
+
+async def _save_style(query, context: ContextTypes.DEFAULT_TYPE, style: str) -> int:
+    """Save communication style and move to Rutracker."""
+    if context.user_data is not None:
+        context.user_data["communication_style"] = style
+        context.user_data["setup_step"] = "rutracker"
+
+    await query.edit_message_text(
+        RUTRACKER_QUESTION,
+        parse_mode="Markdown",
+        reply_markup=get_skip_keyboard(),
+    )
+    return WAITING_RUTRACKER_USER
+
+
 async def _save_quality(query, context: ContextTypes.DEFAULT_TYPE, quality: str) -> None:
     """Save quality and show audio selection."""
     if context.user_data is not None:
@@ -351,6 +597,21 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
     movies = context.user_data.get("favorite_movies") if context.user_data else None
     has_rutracker = context.user_data.get("has_rutracker", False) if context.user_data else False
 
+    # Get new onboarding data
+    selected_genres = (
+        context.user_data.get("selected_genres", set()) if context.user_data else set()
+    )
+    avoid_genres = context.user_data.get("avoid_genres", set()) if context.user_data else set()
+    comm_style = (
+        context.user_data.get("communication_style", "normal") if context.user_data else "normal"
+    )
+
+    # Convert sets to lists for storage
+    if isinstance(selected_genres, set):
+        selected_genres = list(selected_genres)
+    if isinstance(avoid_genres, set):
+        avoid_genres = list(avoid_genres)
+
     # Save to database
     try:
         async with get_storage() as storage:
@@ -360,13 +621,64 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
                     user_id=db_user.id,
                     video_quality=quality,
                     audio_language=audio,
+                    preferred_genres=selected_genres,
+                    excluded_genres=avoid_genres,
                 )
                 # Sync settings to profile
                 from src.user.profile import ProfileManager
 
                 profile_manager = ProfileManager(storage)
                 await profile_manager.sync_from_preferences(db_user.id)
-                logger.info("preferences_saved", user_id=user.id, quality=quality, audio=audio)
+
+                # Initialize Core Memory with onboarding data
+                try:
+                    from src.user.memory import CoreMemoryManager
+
+                    memory_manager = CoreMemoryManager(storage)
+
+                    # Build preferences content
+                    genre_names = dict(GENRE_OPTIONS)
+                    pref_genres_str = (
+                        ", ".join(genre_names.get(g, g) for g in selected_genres) or "Не указаны"
+                    )
+                    avoid_genres_str = (
+                        ", ".join(genre_names.get(g, g) for g in avoid_genres) or "Нет"
+                    )
+                    style_display = {
+                        "brief": "Кратко",
+                        "normal": "Стандартно",
+                        "detailed": "Подробно",
+                    }.get(comm_style, comm_style)
+
+                    preferences_content = (
+                        f"Video quality: {quality}\n"
+                        f"Audio: {audio}\n"
+                        f"Favorite genres: {pref_genres_str}\n"
+                        f"Avoid genres: {avoid_genres_str}"
+                    )
+
+                    style_content = f"Verbosity: {style_display}"
+
+                    await memory_manager.update_block(
+                        db_user.id, "preferences", preferences_content, operation="replace"
+                    )
+                    await memory_manager.update_block(
+                        db_user.id, "style", style_content, operation="replace"
+                    )
+
+                    logger.info("core_memory_initialized", user_id=user.id)
+                except Exception as mem_error:
+                    logger.warning("core_memory_init_failed", error=str(mem_error))
+
+                logger.info(
+                    "preferences_saved",
+                    user_id=user.id,
+                    quality=quality,
+                    audio=audio,
+                    genres=selected_genres,
+                    avoid=avoid_genres,
+                    style=comm_style,
+                )
     except Exception as e:
         logger.exception("save_preferences_error", user_id=user.id, error=str(e))
 
@@ -385,12 +697,28 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
     if has_rutracker:
         rutracker_note = "\nRutracker: подключён"
 
+    # Build genres note
+    genres_note = ""
+    if selected_genres:
+        genre_names = dict(GENRE_OPTIONS)
+        genres_str = ", ".join(genre_names.get(g, g) for g in selected_genres)
+        genres_note = f"\nЖанры: {genres_str}"
+
+    # Build style note
+    style_note = ""
+    if comm_style and comm_style != "normal":
+        style_display = {"brief": "Кратко", "detailed": "Подробно"}.get(comm_style, "")
+        if style_display:
+            style_note = f"\nСтиль: {style_display}"
+
     message = SETUP_COMPLETE.format(
         quality=quality,
         audio=audio_display,
         letterboxd_note=letterboxd_note,
         movies_note=movies_note,
         rutracker_note=rutracker_note,
+        genres_note=genres_note,
+        style_note=style_note,
     )
 
     await query.edit_message_text(message, parse_mode="Markdown")
