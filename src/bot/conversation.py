@@ -2175,86 +2175,13 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
         has_magnet=bool(magnet),
     )
 
-    # If no magnet cached, fetch it from Rutracker page (no auth required for magnet)
+    # If no magnet cached, fetch it via authenticated Rutracker client
     if not magnet and torrent_id and source == "rutracker":
-        # Try multiple mirrors in case main domain is blocked
-        mirrors = [
-            "https://rutracker.org",
-            "https://rutracker.net",
-            "https://rutracker.nl",
-        ]
-
-        for base_url in mirrors:
-            try:
-                import httpx
-                from bs4 import BeautifulSoup
-
-                url = f"{base_url}/forum/viewtopic.php?t={torrent_id}"
-                logger.info("fetching_magnet_from_page", url=url, torrent_id=torrent_id)
-
-                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
-                    response = await http_client.get(
-                        url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                            "Accept": "text/html,application/xhtml+xml",
-                            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-                        },
-                    )
-
-                    logger.info(
-                        "rutracker_page_response",
-                        status=response.status_code,
-                        url=url,
-                        content_length=len(response.text),
-                    )
-
-                    if response.status_code == 200:
-                        soup = BeautifulSoup(response.text, "lxml")
-                        magnet_elem = soup.select_one('a.magnet-link[href^="magnet:"]')
-
-                        if not magnet_elem:
-                            # Try alternative selector
-                            magnet_elem = soup.select_one('a[href^="magnet:"]')
-
-                        if magnet_elem:
-                            magnet = magnet_elem.get("href", "")
-                            if magnet:
-                                result["magnet"] = magnet
-                                cache_search_result(result_id, result)
-                                logger.info("magnet_fetched_from_page", torrent_id=torrent_id)
-                                break  # Success, exit mirror loop
-                        else:
-                            # Check if it's a login page
-                            login_form = soup.select_one('form[action*="login"]')
-                            if login_form:
-                                logger.warning(
-                                    "rutracker_requires_login",
-                                    torrent_id=torrent_id,
-                                    mirror=base_url,
-                                )
-                            else:
-                                logger.warning(
-                                    "magnet_element_not_found",
-                                    torrent_id=torrent_id,
-                                    mirror=base_url,
-                                )
-                    else:
-                        logger.warning(
-                            "rutracker_page_error",
-                            status=response.status_code,
-                            torrent_id=torrent_id,
-                            mirror=base_url,
-                        )
-            except Exception as e:
-                logger.warning(
-                    "failed_to_fetch_magnet",
-                    error=str(e),
-                    torrent_id=torrent_id,
-                    mirror=base_url,
-                )
-                continue  # Try next mirror
+        telegram_id = query.from_user.id if query.from_user else None
+        magnet = await _fetch_magnet_via_rutracker(torrent_id, telegram_id)
+        if magnet:
+            result["magnet"] = magnet
+            cache_search_result(result_id, result)
 
     # If still no magnet, show error
     if not magnet:
@@ -2433,6 +2360,51 @@ async def _fetch_magnet_from_torrent_url(torrent_url: str, title: str) -> str | 
     return None
 
 
+async def _fetch_magnet_via_rutracker(topic_id: str, telegram_id: int | None = None) -> str | None:
+    """Fetch magnet link from Rutracker using authenticated client.
+
+    Args:
+        topic_id: Rutracker topic ID (torrent_id from cache).
+        telegram_id: User's telegram ID to get credentials.
+
+    Returns:
+        Magnet link or None if extraction fails.
+    """
+    from src.search.rutracker import RutrackerClient
+
+    if not topic_id:
+        return None
+
+    # Get user credentials
+    username = None
+    password = None
+
+    if telegram_id:
+        from src.bot.rutracker_auth import get_user_rutracker_credentials
+
+        username, password = await get_user_rutracker_credentials(telegram_id)
+
+    # Fall back to global credentials
+    if not username:
+        username = settings.rutracker_username
+        password = (
+            settings.rutracker_password.get_secret_value() if settings.rutracker_password else None
+        )
+
+    if not username:
+        logger.warning("no_rutracker_credentials_for_magnet")
+        return None
+
+    try:
+        async with RutrackerClient(username=username, password=password) as client:
+            magnet = await client.get_magnet_link(int(topic_id))
+            logger.info("magnet_fetched_via_rutracker", topic_id=topic_id)
+            return magnet
+    except Exception as e:
+        logger.warning("rutracker_magnet_fetch_failed", error=str(e), topic_id=topic_id)
+        return None
+
+
 async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle magnet button callback - send magnet link as text.
 
@@ -2460,13 +2432,21 @@ async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
 
-    # If magnet is empty, try to extract from torrent file
+    # If magnet is empty, try to fetch via authenticated Rutracker client
     if not magnet:
-        torrent_url = result.get("torrent_url", "")
+        torrent_id = result.get("torrent_id", "")
+        source = result.get("source", "")
+        telegram_id = update.effective_user.id if update.effective_user else None
 
         await query.answer("Загружаю магнет-ссылку...")
 
-        magnet = await _fetch_magnet_from_torrent_url(torrent_url, title)
+        # Try Rutracker authenticated client first (for rutracker source)
+        if torrent_id and source == "rutracker":
+            magnet = await _fetch_magnet_via_rutracker(torrent_id, telegram_id)
+        else:
+            # Fallback to torrent file extraction for other sources
+            torrent_url = result.get("torrent_url", "")
+            magnet = await _fetch_magnet_from_torrent_url(torrent_url, title)
 
         if magnet:
             # Update cache with fetched magnet
@@ -2566,9 +2546,19 @@ async def handle_torrent_callback(update: Update, _context: ContextTypes.DEFAULT
         magnet = magnet[0] if magnet else ""
 
     if not magnet:
-        # Try to extract magnet from torrent file
-        torrent_url_fallback = result.get("torrent_url", "")
-        magnet = await _fetch_magnet_from_torrent_url(torrent_url_fallback, title)
+        # Try to fetch magnet via authenticated Rutracker client
+        torrent_id = result.get("torrent_id", "")
+        source = result.get("source", "")
+        telegram_id = update.effective_user.id if update.effective_user else None
+
+        # Try Rutracker authenticated client first (for rutracker source)
+        if torrent_id and source == "rutracker":
+            magnet = await _fetch_magnet_via_rutracker(torrent_id, telegram_id)
+        else:
+            # Fallback to torrent file extraction for other sources
+            torrent_url_fallback = result.get("torrent_url", "")
+            magnet = await _fetch_magnet_from_torrent_url(torrent_url_fallback, title)
+
         if magnet:
             result["magnet"] = magnet
             cache_search_result(result_id, result)
@@ -2613,13 +2603,21 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
 
-    # If magnet is empty, try to extract from torrent file
+    # If magnet is empty, try to fetch via authenticated Rutracker client
     if not magnet:
-        torrent_url = result.get("torrent_url", "")
+        torrent_id = result.get("torrent_id", "")
+        source = result.get("source", "")
+        telegram_id = update.effective_user.id if update.effective_user else None
 
         await query.answer("Загружаю магнет-ссылку...")
 
-        magnet = await _fetch_magnet_from_torrent_url(torrent_url, title)
+        # Try Rutracker authenticated client first (for rutracker source)
+        if torrent_id and source == "rutracker":
+            magnet = await _fetch_magnet_via_rutracker(torrent_id, telegram_id)
+        else:
+            # Fallback to torrent file extraction for other sources
+            torrent_url = result.get("torrent_url", "")
+            magnet = await _fetch_magnet_from_torrent_url(torrent_url, title)
 
         if magnet:
             # Update cache with fetched magnet
