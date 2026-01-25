@@ -100,13 +100,36 @@ class ConversationContext:
             # Keep system-relevant messages and recent history
             self.messages = self.messages[-self.max_history :]
 
-    def get_messages_for_api(self) -> list[dict[str, Any]]:
+    def get_messages_for_api(self, thinking_enabled: bool = False) -> list[dict[str, Any]]:
         """Get messages formatted for the Anthropic API.
+
+        Args:
+            thinking_enabled: If True, ensures assistant messages start with thinking blocks.
 
         Returns:
             List of message dicts ready for the API.
         """
-        return [{"role": msg.role, "content": msg.content} for msg in self.messages]
+        result = []
+        for msg in self.messages:
+            if msg.role == "assistant" and thinking_enabled:
+                # When thinking is enabled, assistant messages must start with thinking block
+                content = msg.content
+                if isinstance(content, str):
+                    # Convert text to content blocks with redacted_thinking
+                    content = [
+                        {"type": "redacted_thinking", "data": ""},
+                        {"type": "text", "text": content},
+                    ]
+                elif isinstance(content, list) and content:
+                    # Check if first block is already thinking/redacted_thinking
+                    first_type = content[0].get("type", "") if isinstance(content[0], dict) else ""
+                    if first_type not in ("thinking", "redacted_thinking"):
+                        # Prepend redacted_thinking
+                        content = [{"type": "redacted_thinking", "data": ""}] + content
+                result.append({"role": msg.role, "content": content})
+            else:
+                result.append({"role": msg.role, "content": msg.content})
+        return result
 
     def clear(self) -> None:
         """Clear the conversation history."""
@@ -187,7 +210,7 @@ class ClaudeClient:
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system_prompt,
-            "messages": context.get_messages_for_api(),
+            "messages": context.get_messages_for_api(thinking_enabled=self.thinking_budget > 0),
         }
 
         # Add tools if available
@@ -262,7 +285,17 @@ class ClaudeClient:
                 final_text = "\n".join(text_blocks)
 
                 # Add assistant response to context
-                context.add_message("assistant", final_text)
+                if self.thinking_budget > 0:
+                    # When thinking is enabled, assistant messages must start with thinking block
+                    context.add_message(
+                        "assistant",
+                        [
+                            {"type": "redacted_thinking", "data": ""},
+                            {"type": "text", "text": final_text},
+                        ],
+                    )
+                else:
+                    context.add_message("assistant", final_text)
 
                 logger.info(
                     "response_complete",
@@ -311,7 +344,9 @@ class ClaudeClient:
             )
 
             # Update params and continue conversation
-            params["messages"] = context.get_messages_for_api()
+            params["messages"] = context.get_messages_for_api(
+                thinking_enabled=self.thinking_budget > 0
+            )
             response = await self.client.messages.create(**params)
 
         # Max iterations reached
@@ -403,7 +438,7 @@ class ClaudeClient:
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system_prompt,
-            "messages": context.get_messages_for_api(),
+            "messages": context.get_messages_for_api(thinking_enabled=self.thinking_budget > 0),
         }
 
         # Add tools if available
@@ -482,6 +517,9 @@ class ClaudeClient:
 
                 # Add assistant response with tool calls to context
                 content_blocks = []
+                # When thinking is enabled, assistant messages must start with thinking block
+                if self.thinking_budget > 0:
+                    content_blocks.append({"type": "redacted_thinking", "data": ""})
                 if accumulated_text:
                     content_blocks.append({"type": "text", "text": accumulated_text})
                 for tc in tool_calls:
@@ -521,7 +559,9 @@ class ClaudeClient:
                 )
 
                 # Continue conversation (non-streaming for tool continuations)
-                params["messages"] = context.get_messages_for_api()
+                params["messages"] = context.get_messages_for_api(
+                    thinking_enabled=self.thinking_budget > 0
+                )
                 response = await self.client.messages.create(**params)
 
                 # Extract final text from continued response
@@ -533,7 +573,17 @@ class ClaudeClient:
             else:
                 # No tool calls, add text to context
                 if accumulated_text:
-                    context.add_message("assistant", accumulated_text)
+                    if self.thinking_budget > 0:
+                        # When thinking is enabled, assistant messages must start with thinking block
+                        context.add_message(
+                            "assistant",
+                            [
+                                {"type": "redacted_thinking", "data": ""},
+                                {"type": "text", "text": accumulated_text},
+                            ],
+                        )
+                    else:
+                        context.add_message("assistant", accumulated_text)
 
             logger.info(
                 "stream_complete",
