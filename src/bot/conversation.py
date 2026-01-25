@@ -553,6 +553,54 @@ async def handle_tmdb_search(tool_input: dict[str, Any]) -> str:
         )
 
 
+async def handle_tmdb_person_search(tool_input: dict[str, Any]) -> str:
+    """Handle tmdb_person_search tool call.
+
+    Args:
+        tool_input: Tool parameters (query).
+
+    Returns:
+        JSON string with person search results including TMDB IDs.
+    """
+    query = tool_input.get("query", "")
+
+    if not query:
+        return json.dumps(
+            {"status": "error", "error": "query is required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("tmdb_person_search", query=query)
+
+    try:
+        async with TMDBClient() as client:
+            results = await client.search_person(query)
+            results = results[:5]  # Limit to top 5
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "source": "tmdb",
+                    "results": [
+                        {
+                            "id": r["id"],
+                            "name": r["name"],
+                            "known_for": r.get("known_for_department", ""),
+                        }
+                        for r in results
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    except TMDBError as e:
+        logger.warning("tmdb_person_search_failed", error=str(e))
+        return json.dumps(
+            {"status": "error", "source": "tmdb", "error": str(e)},
+            ensure_ascii=False,
+        )
+
+
 async def handle_tmdb_credits(tool_input: dict[str, Any]) -> str:
     """Handle tmdb_credits tool call.
 
@@ -2325,6 +2373,7 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "rutracker_search": rutracker_handler,
             "piratebay_search": handle_piratebay_search,
             "tmdb_search": handle_tmdb_search,
+            "tmdb_person_search": handle_tmdb_person_search,
             "tmdb_credits": handle_tmdb_credits,
             "tmdb_tv_details": handle_tmdb_tv_details,
             "kinopoisk_search": handle_kinopoisk_search,

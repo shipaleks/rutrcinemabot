@@ -119,11 +119,30 @@ TMDB_SEARCH_TOOL = {
     },
 }
 
+TMDB_PERSON_SEARCH_TOOL = {
+    "name": "tmdb_person_search",
+    "description": (
+        "Поиск персоны (актёра, режиссёра, сценариста) по имени в TMDB. "
+        "ОБЯЗАТЕЛЬНО используй этот инструмент чтобы получить TMDB ID персоны "
+        "перед созданием entity ссылки. Возвращает id, имя, профессию."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Имя персоны для поиска (например 'Ari Aster' или 'Тимоти Шаламе')",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
 TMDB_CREDITS_TOOL = {
     "name": "tmdb_credits",
     "description": (
         "Получение информации о съёмочной группе и актёрах фильма из TMDB. "
-        "Возвращает режиссёра, актёров, сценаристов и других участников."
+        "Возвращает режиссёра, актёров, сценаристов и других участников с их TMDB ID."
     ),
     "input_schema": {
         "type": "object",
@@ -952,6 +971,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
     RUTRACKER_SEARCH_TOOL,
     PIRATEBAY_SEARCH_TOOL,
     TMDB_SEARCH_TOOL,
+    TMDB_PERSON_SEARCH_TOOL,
     TMDB_CREDITS_TOOL,
     TMDB_TV_DETAILS_TOOL,
     KINOPOISK_SEARCH_TOOL,
