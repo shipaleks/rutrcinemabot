@@ -10,6 +10,23 @@ from src.media.tmdb import TMDBClient
 
 logger = structlog.get_logger(__name__)
 
+BOT_USERNAME = "trmoviebot"
+
+
+def _person_link(name: str, person_id: int) -> str:
+    """Format a person as a clickable link."""
+    return f'<a href="https://t.me/{BOT_USERNAME}?start=p_{person_id}">{name}</a>'
+
+
+def _movie_link(title: str, movie_id: int) -> str:
+    """Format a movie as a clickable link."""
+    return f'<a href="https://t.me/{BOT_USERNAME}?start=m_{movie_id}">{title}</a>'
+
+
+def _tv_link(name: str, tv_id: int) -> str:
+    """Format a TV show as a clickable link."""
+    return f'<a href="https://t.me/{BOT_USERNAME}?start=t_{tv_id}">{name}</a>'
+
 
 async def format_person_card(person_id: int) -> tuple[str, str | None]:
     """Format a person card with photo URL and caption.
@@ -77,12 +94,15 @@ async def format_person_card(person_id: int) -> tuple[str, str | None]:
         caption += "\n<b>Известные работы:</b>\n"
         for m in top_movies:
             title = m.get("title", "")
+            movie_id = m.get("id")
             year = m.get("release_date", "")[:4] or "?"
             role = m.get("character") or m.get("job") or ""
+            # Make movie title a clickable link
+            title_text = _movie_link(title, movie_id) if movie_id else title
             if role:
-                caption += f"• {title} ({year}) — {role}\n"
+                caption += f"• {title_text} ({year}) — {role}\n"
             else:
-                caption += f"• {title} ({year})\n"
+                caption += f"• {title_text} ({year})\n"
 
     # Get photo URL
     photo_url = None
@@ -134,12 +154,12 @@ async def format_movie_card(movie_id: int) -> tuple[str, str | None]:
         caption += f"{', '.join(genres)}\n"
 
     if directors:
-        director_names = ", ".join(d.name for d in directors[:2])
-        caption += f"\n<b>Режиссёр:</b> {director_names}\n"
+        director_links = ", ".join(_person_link(d.name, d.id) for d in directors[:2])
+        caption += f"\n<b>Режиссёр:</b> {director_links}\n"
 
     if cast:
-        actors = ", ".join(a.name for a in cast[:4])
-        caption += f"<b>В ролях:</b> {actors}\n"
+        actor_links = ", ".join(_person_link(a.name, a.id) for a in cast[:4])
+        caption += f"<b>В ролях:</b> {actor_links}\n"
 
     if movie.overview:
         overview = movie.overview
@@ -208,8 +228,8 @@ async def format_tv_card(tv_id: int) -> tuple[str, str | None]:
         caption += f"{', '.join(genres)}\n"
 
     if cast:
-        actors = ", ".join(a.name for a in cast[:4])
-        caption += f"\n<b>В ролях:</b> {actors}\n"
+        actor_links = ", ".join(_person_link(a.name, a.id) for a in cast[:4])
+        caption += f"\n<b>В ролях:</b> {actor_links}\n"
 
     if show.overview:
         overview = show.overview
