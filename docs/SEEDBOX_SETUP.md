@@ -1,81 +1,81 @@
-# Seedbox Setup Guide
+# Настройка Seedbox
 
-This guide explains how to set up a seedbox for use with the Media Concierge Bot.
+Инструкция по настройке seedbox для работы с ботом Media Concierge.
 
-## Overview
+## Обзор
 
-A seedbox allows you to:
-- Download torrents on a remote high-speed server
-- Stream or sync files to your local NAS
-- Keep your home IP separate from torrent activity
+Seedbox позволяет:
+- Скачивать торренты на удалённом высокоскоростном сервере
+- Стримить или синхронизировать файлы на локальный NAS
+- Держать домашний IP отдельно от торрент-активности
 
-The bot supports **Deluge** torrent client (used by Ultra.cc and similar providers).
+Бот поддерживает торрент-клиент **Deluge** (используется на Ultra.cc и аналогичных провайдерах).
 
-## 1. Register on Ultra.cc
+## 1. Регистрация на Ultra.cc
 
-1. Go to https://ultra.cc/
-2. Choose a plan:
-   - **S-Wind** ($4.48/mo) - Good for personal use
-   - **M-Wind** ($8.95/mo) - More storage and bandwidth
-3. Select **Netherlands** datacenter (or closest to you)
-4. Complete registration and payment
+1. Перейди на https://ultra.cc/
+2. Выбери тариф:
+   - **S-Wind** ($4.48/мес) — подходит для личного использования
+   - **M-Wind** ($8.95/мес) — больше места и трафика
+3. Выбери датацентр **Netherlands** (или ближайший к тебе)
+4. Заверши регистрацию и оплату
 
-## 2. Install Deluge
+## 2. Установка Deluge
 
-1. Login to UCP (Ultra Control Panel) at https://cp.ultra.cc/
-2. Go to **Applications** > **Install**
-3. Find and install **Deluge**
-4. Wait for installation to complete
+1. Войди в UCP (Ultra Control Panel) на https://cp.ultra.cc/
+2. Перейди в **Applications** > **Install**
+3. Найди и установи **Deluge**
+4. Дождись завершения установки
 
-## 3. Configure Deluge
+## 3. Настройка Deluge
 
-1. In UCP, click on **Deluge** to open settings
-2. Set a **Web UI password** (you'll need this for the bot)
-3. Note your Deluge URL format:
+1. В UCP нажми на **Deluge**, чтобы открыть настройки
+2. Установи **пароль Web UI** (он понадобится для бота)
+3. Запиши URL твоего Deluge в формате:
    ```
    https://USERNAME.SERVERNAME.usbx.me/deluge
    ```
-   Replace USERNAME and SERVERNAME with your actual values
+   Замени USERNAME и SERVERNAME на свои значения
 
-## 4. Configure the Bot
+## 4. Настройка бота
 
-In Telegram, send the `/seedbox` command to the bot.
+В Telegram отправь боту команду `/seedbox`.
 
-Enter your credentials when prompted:
-1. **Host URL**: Your Deluge Web UI URL (e.g., `https://john.sb01.usbx.me/deluge`)
-2. **Username**: Your Ultra.cc username
-3. **Password**: Your Deluge Web UI password
+Введи данные по запросу:
+1. **URL хоста**: URL твоего Deluge Web UI (например, `https://john.sb01.usbx.me/deluge`)
+2. **Имя пользователя**: твой логин Ultra.cc
+3. **Пароль**: пароль от Deluge Web UI
 
-The bot will test the connection before saving.
+Бот проверит подключение перед сохранением.
 
-## 5. Test the Setup
+## 5. Проверка
 
-1. Search for any movie in the bot
-2. Click the **Seedbox** button on a search result
-3. Check your Deluge web UI to confirm the torrent was added
+1. Найди любой фильм через бота
+2. Нажми кнопку **Seedbox** на результате поиска
+3. Проверь в веб-интерфейсе Deluge, что торрент добавился
 
-## Troubleshooting
+## Решение проблем
 
-### "Connection failed"
-- Verify your Deluge URL is correct
-- Make sure Deluge is running (check UCP)
-- Try accessing the URL in a browser
+### «Ошибка подключения»
+- Проверь правильность URL Deluge
+- Убедись, что Deluge запущен (проверь в UCP)
+- Попробуй открыть URL в браузере
 
-### "Authentication failed"
-- Double-check your password
-- Reset the Deluge password in UCP if needed
+### «Ошибка авторизации»
+- Перепроверь пароль
+- При необходимости сбрось пароль Deluge в UCP
 
-### "Torrent not added"
-- Check if Deluge has available disk space
-- Verify the magnet link is valid
+### «Торрент не добавлен»
+- Проверь, есть ли свободное место на Deluge
+- Убедись, что magnet-ссылка валидна
 
-## Multi-User Support
+## Многопользовательский режим
 
-Each user can configure their own seedbox:
-- Your credentials are stored encrypted
-- Only you can access your seedbox
-- Friends can set up their own seedbox accounts
+Каждый пользователь может настроить свой seedbox:
+- Твои данные хранятся в зашифрованном виде
+- Только ты имеешь доступ к своему seedbox
+- Друзья могут настроить свои аккаунты seedbox
 
-## Optional: Sync to NAS
+## Опционально: Синхронизация на NAS
 
-See [FREEBOX_VM_SETUP.md](FREEBOX_VM_SETUP.md) for automatic sync to your local NAS.
+Смотри [FREEBOX_VM_SETUP.md](FREEBOX_VM_SETUP.md) для автоматической синхронизации на локальный NAS.
