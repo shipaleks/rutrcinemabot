@@ -54,6 +54,9 @@ PUSH_DELIVERY_CHECK_HOURS = 4  # Check for pending pushes every 4 hours
 PUSH_MIN_HOUR = 18  # Earliest hour to send pushes (evening)
 PUSH_MAX_HOUR = 21  # Latest hour to send pushes
 
+# Industry news settings
+NEWS_CHECK_INTERVAL_HOURS = 24  # Check news once per day
+
 
 def get_check_interval_hours(release_date: datetime | None) -> int:
     """Calculate check interval based on expected release date.
@@ -225,6 +228,16 @@ class MonitoringScheduler:
             trigger=IntervalTrigger(hours=PUSH_DELIVERY_CHECK_HOURS),
             id="push_delivery",
             name="Push Notification Delivery",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add industry news check - once per day
+        self._scheduler.add_job(
+            self._check_industry_news,
+            trigger=IntervalTrigger(hours=NEWS_CHECK_INTERVAL_HOURS),
+            id="industry_news",
+            name="Industry News Check",
             replace_existing=True,
             max_instances=1,
         )
@@ -984,6 +997,113 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
 
         except Exception as e:
             logger.exception("hidden_gems_generation_failed", error=str(e))
+
+    async def _check_industry_news(self) -> None:
+        """Check for industry news relevant to user's favorite directors/actors.
+
+        Scans RSS feeds from Deadline, Variety, IndieWire, and Hollywood Reporter
+        and creates pending pushes for relevant news items.
+        """
+        logger.info("industry_news_check_started")
+
+        try:
+            from src.services.news import NewsService
+
+            async with get_storage() as storage:
+                users = await storage.get_all_users(limit=1000)
+
+                for user in users:
+                    try:
+                        # Check if user wants notifications
+                        prefs = await storage.get_preferences(user.id)
+                        if prefs and not prefs.notification_enabled:
+                            continue
+
+                        # Collect keywords from user's memory notes
+                        keywords = set()
+
+                        # Search for director mentions
+                        notes = await storage.search_memory_notes(
+                            user_id=user.id,
+                            query="director",
+                            limit=20,
+                        )
+                        notes_ru = await storage.search_memory_notes(
+                            user_id=user.id,
+                            query="режиссёр",
+                            limit=20,
+                        )
+                        notes.extend(notes_ru)
+
+                        # Search for actor mentions
+                        actor_notes = await storage.search_memory_notes(
+                            user_id=user.id,
+                            query="actor",
+                            limit=20,
+                        )
+                        actor_notes_ru = await storage.search_memory_notes(
+                            user_id=user.id,
+                            query="актёр",
+                            limit=20,
+                        )
+                        notes.extend(actor_notes)
+                        notes.extend(actor_notes_ru)
+
+                        # Extract names from notes
+                        import re
+
+                        for note in notes:
+                            # Extract names (capitalized words, likely names)
+                            names = re.findall(
+                                r"[A-ZА-Я][a-zа-яё]+ [A-ZА-Я][a-zа-яё]+",
+                                note.content,
+                            )
+                            keywords.update(names[:3])  # Limit per note
+
+                        if not keywords:
+                            continue
+
+                        # Fetch relevant news
+                        async with NewsService() as news_service:
+                            news_items = await news_service.get_relevant_news(
+                                keywords=list(keywords)[:20],  # Limit keywords
+                                hours=24,
+                                max_results=5,
+                            )
+
+                            for news_item in news_items:
+                                # Create pending push for relevant news
+                                await storage.create_pending_push(
+                                    user_id=user.id,
+                                    push_type="news",
+                                    priority=4,  # Lowest priority
+                                    content={
+                                        "headline": news_item.title[:200],
+                                        "description": news_item.description[:300],
+                                        "link": news_item.link,
+                                        "source": news_item.source,
+                                        "keywords": news_item.keywords_matched,
+                                    },
+                                )
+
+                                logger.info(
+                                    "news_push_created",
+                                    user_id=user.id,
+                                    headline=news_item.title[:50],
+                                    source=news_item.source,
+                                )
+
+                    except Exception as e:
+                        logger.warning(
+                            "industry_news_user_failed",
+                            user_id=user.id,
+                            error=str(e),
+                        )
+
+            logger.info("industry_news_check_completed")
+
+        except Exception as e:
+            logger.exception("industry_news_check_failed", error=str(e))
 
     async def _deliver_pending_pushes(self) -> None:
         """Deliver pending push notifications with throttling.
