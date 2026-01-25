@@ -486,12 +486,10 @@ class ClaudeClient:
         try:
             accumulated_text = ""
             tool_calls: list[dict[str, Any]] = []
-            thinking_blocks: list[dict[str, Any]] = []  # Capture thinking blocks
             current_tool_input = ""
             current_tool_id = ""
             current_tool_name = ""
-            current_thinking = ""
-            in_thinking_block = False
+            final_message = None
 
             async with self.client.messages.stream(**params) as stream:
                 async for event in stream:
@@ -501,9 +499,6 @@ class ClaudeClient:
                             current_tool_id = event.content_block.id
                             current_tool_name = event.content_block.name
                             current_tool_input = ""
-                        elif event.content_block.type == "thinking":
-                            in_thinking_block = True
-                            current_thinking = ""
 
                     elif event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
@@ -514,39 +509,38 @@ class ClaudeClient:
                         elif hasattr(event.delta, "partial_json"):
                             # Tool input delta - accumulate
                             current_tool_input += event.delta.partial_json
-                        elif hasattr(event.delta, "thinking"):
-                            # Thinking delta - accumulate (don't yield)
-                            current_thinking += event.delta.thinking
+                        # Note: thinking deltas are handled automatically
 
-                    elif event.type == "content_block_stop":
-                        if in_thinking_block and current_thinking:
-                            # Save thinking block
-                            thinking_blocks.append(
-                                {
-                                    "type": "thinking",
-                                    "thinking": current_thinking,
-                                }
+                    elif (
+                        event.type == "content_block_stop" and current_tool_id and current_tool_name
+                    ):
+                        # Finalize tool call
+                        try:
+                            tool_input = (
+                                json.loads(current_tool_input) if current_tool_input else {}
                             )
-                            in_thinking_block = False
-                            current_thinking = ""
-                        elif current_tool_id and current_tool_name:
-                            # Finalize tool call
-                            try:
-                                tool_input = (
-                                    json.loads(current_tool_input) if current_tool_input else {}
-                                )
-                            except json.JSONDecodeError:
-                                tool_input = {}
+                        except json.JSONDecodeError:
+                            tool_input = {}
 
-                            tool_calls.append(
-                                {
-                                    "id": current_tool_id,
-                                    "name": current_tool_name,
-                                    "input": tool_input,
-                                }
-                            )
-                            current_tool_id = ""
-                            current_tool_name = ""
+                        tool_calls.append(
+                            {
+                                "id": current_tool_id,
+                                "name": current_tool_name,
+                                "input": tool_input,
+                            }
+                        )
+                        current_tool_id = ""
+                        current_tool_name = ""
+
+                # Get final message with all content blocks (including thinking with signatures)
+                final_message = await stream.get_final_message()
+
+            # Check if response has thinking blocks (for continuation decision)
+            has_thinking = (
+                any(block.type == "thinking" for block in final_message.content)
+                if final_message
+                else False
+            )
 
             # After stream completes, handle tool calls if any
             if tool_calls:
@@ -555,22 +549,12 @@ class ClaudeClient:
                     count=len(tool_calls),
                 )
 
-                # Add assistant response with tool calls to context
-                # IMPORTANT: thinking blocks MUST come first for API compatibility
-                content_blocks: list[dict[str, Any]] = []
-                content_blocks.extend(thinking_blocks)  # Thinking first
-                if accumulated_text:
-                    content_blocks.append({"type": "text", "text": accumulated_text})
-                for tc in tool_calls:
-                    content_blocks.append(
-                        {
-                            "type": "tool_use",
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "input": tc["input"],
-                        }
-                    )
-                context.add_message("assistant", content_blocks)
+                # Add assistant response to context using final_message content
+                # This preserves thinking blocks with their signatures
+                context.add_message(
+                    "assistant",
+                    [block.model_dump() for block in final_message.content],
+                )
 
                 # Execute tools
                 tool_results = []
@@ -597,11 +581,11 @@ class ClaudeClient:
                     ],
                 )
 
-                # Continue conversation - keep thinking if we captured thinking blocks
+                # Continue conversation - keep thinking if response had thinking blocks
                 continuation_params = params.copy()
                 continuation_params["messages"] = context.get_messages_for_api()
-                # Only disable thinking if we didn't capture any thinking blocks
-                if "thinking" in continuation_params and not thinking_blocks:
+                # Only disable thinking if response didn't have thinking blocks
+                if "thinking" in continuation_params and not has_thinking:
                     del continuation_params["thinking"]
                     continuation_params["max_tokens"] = 16384
                 response = await self.client.messages.create(**continuation_params)
@@ -614,15 +598,16 @@ class ClaudeClient:
                     yield "\n\n" + final_text
             else:
                 # No tool calls, add response to context
-                if thinking_blocks or accumulated_text:
-                    if thinking_blocks:
-                        # Include thinking blocks for history compatibility
-                        content_blocks: list[dict[str, Any]] = list(thinking_blocks)
-                        if accumulated_text:
-                            content_blocks.append({"type": "text", "text": accumulated_text})
-                        context.add_message("assistant", content_blocks)
-                    else:
-                        # No thinking, just text
+                # Use final_message to preserve thinking blocks with signatures
+                if final_message and final_message.content:
+                    if has_thinking:
+                        # Preserve all content blocks including thinking with signatures
+                        context.add_message(
+                            "assistant",
+                            [block.model_dump() for block in final_message.content],
+                        )
+                    elif accumulated_text:
+                        # No thinking, just save text
                         context.add_message("assistant", accumulated_text)
 
             logger.info(
