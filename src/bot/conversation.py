@@ -83,10 +83,7 @@ def is_valid_magnet(magnet: str | None) -> bool:
         return False
     # Reject known placeholders
     placeholders = ["PIRATEBAY_MAGNET", "PLACEHOLDER", "UNKNOWN", "N/A"]
-    for ph in placeholders:
-        if ph in magnet.upper():
-            return False
-    return True
+    return all(ph not in magnet.upper() for ph in placeholders)
 
 
 def cache_search_result(result_id: str, result_data: dict[str, Any]) -> None:
@@ -2606,15 +2603,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 blocks = await memory_manager.get_all_blocks(db_user.id)
 
                 # Migrate old profile to core memory if blocks are empty
-                if not blocks or all(not b.content for b in blocks):
-                    if conv_context.user_profile_md:
-                        logger.info(
-                            "migrating_profile_to_core_memory",
-                            user_id=user.id,
-                        )
-                        blocks = await migrate_profile_to_core_memory(
-                            storage, db_user.id, conv_context.user_profile_md
-                        )
+                if (
+                    not blocks or all(not b.content for b in blocks)
+                ) and conv_context.user_profile_md:
+                    logger.info(
+                        "migrating_profile_to_core_memory",
+                        user_id=user.id,
+                    )
+                    blocks = await migrate_profile_to_core_memory(
+                        storage, db_user.id, conv_context.user_profile_md
+                    )
 
                 # Render core memory for Claude's context
                 if blocks:

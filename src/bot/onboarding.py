@@ -615,7 +615,90 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
     )
 
     await query.edit_message_text(message, parse_mode="Markdown")
+
+    # Generate instant hidden gem recommendation if user has enough data
+    if letterboxd_stats or movies:
+        try:
+            await _send_instant_recommendation(query, user.id)
+        except Exception as e:
+            logger.warning("instant_recommendation_failed", user_id=user.id, error=str(e))
+
     return ConversationHandler.END
+
+
+# =============================================================================
+# Instant Recommendation After Setup
+# =============================================================================
+
+
+async def _send_instant_recommendation(query, telegram_id: int) -> None:
+    """Generate and send a personalized recommendation after setup.
+
+    Args:
+        query: Telegram callback query for sending messages.
+        telegram_id: User's Telegram ID.
+    """
+    import json
+
+    from src.bot.conversation import handle_get_hidden_gem
+
+    try:
+        async with get_storage() as storage:
+            db_user = await storage.get_user_by_telegram_id(telegram_id)
+            if not db_user:
+                return
+
+            # Call the hidden gem handler
+            result_json = await handle_get_hidden_gem({"user_id": db_user.id})
+            result = json.loads(result_json)
+
+            if result.get("status") != "success":
+                logger.info(
+                    "instant_recommendation_skipped",
+                    user_id=telegram_id,
+                    reason=result.get("error", "unknown"),
+                )
+                return
+
+            rec = result.get("recommendation", {})
+            title = rec.get("title", "")
+            year = rec.get("year", "")
+            reason = rec.get("reason", "")
+            director = rec.get("director", "")
+
+            if not title:
+                return
+
+            # Build recommendation message
+            message_parts = [
+                "**Рекомендация на основе твоих вкусов:**",
+                "",
+                f"**{title}** ({year})",
+            ]
+
+            if director:
+                message_parts.append(f"Режиссёр: {director}")
+
+            if reason:
+                message_parts.append("")
+                message_parts.append(reason)
+
+            message_parts.append("")
+            message_parts.append("_Напиши название, чтобы найти и скачать._")
+
+            await query.message.reply_text(
+                "\n".join(message_parts),
+                parse_mode="Markdown",
+            )
+
+            logger.info(
+                "instant_recommendation_sent",
+                user_id=telegram_id,
+                title=title,
+            )
+
+    except Exception as e:
+        logger.warning("instant_recommendation_error", user_id=telegram_id, error=str(e))
 
 
 # =============================================================================

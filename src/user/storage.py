@@ -1886,13 +1886,9 @@ class SQLiteStorage(BaseStorage):
             excluded_genres=json.loads(row["excluded_genres"] or "[]"),
             auto_download=bool(row["auto_download"]),
             notification_enabled=bool(row["notification_enabled"]),
-            claude_model=row["claude_model"]
-            if "claude_model" in row.keys()
-            else "claude-sonnet-4-5-20250929",
-            thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
-            default_search_source=row["default_search_source"]
-            if "default_search_source" in row.keys()
-            else "auto",
+            claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
+            thinking_budget=row.get("thinking_budget", 0),
+            default_search_source=row.get("default_search_source", "auto"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -2443,7 +2439,7 @@ class SQLiteStorage(BaseStorage):
         """Convert database row to Monitor model."""
         # Parse found_data JSON if present
         found_data = None
-        if "found_data" in row.keys() and row["found_data"]:
+        if "found_data" in row and row["found_data"]:
             found_data = json.loads(row["found_data"])
 
         return Monitor(
@@ -2457,19 +2453,19 @@ class SQLiteStorage(BaseStorage):
             status=row["status"],
             found_at=datetime.fromisoformat(row["found_at"]) if row["found_at"] else None,
             release_date=datetime.fromisoformat(row["release_date"])
-            if "release_date" in row.keys() and row["release_date"]
+            if "release_date" in row and row["release_date"]
             else None,
             last_checked=datetime.fromisoformat(row["last_checked"])
-            if "last_checked" in row.keys() and row["last_checked"]
+            if "last_checked" in row and row["last_checked"]
             else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             found_data=found_data,
             # TV series episode tracking
             tracking_mode=row["tracking_mode"]
-            if "tracking_mode" in row.keys() and row["tracking_mode"]
+            if "tracking_mode" in row and row["tracking_mode"]
             else "season",
-            season_number=row["season_number"] if "season_number" in row.keys() else None,
-            episode_number=row["episode_number"] if "episode_number" in row.keys() else None,
+            season_number=row.get("season_number", None),
+            episode_number=row.get("episode_number", None),
         )
 
     # -------------------------------------------------------------------------
@@ -4099,13 +4095,9 @@ class PostgresStorage(BaseStorage):
             excluded_genres=excluded or [],
             auto_download=row["auto_download"],
             notification_enabled=row["notification_enabled"],
-            claude_model=row["claude_model"]
-            if "claude_model" in row.keys()
-            else "claude-sonnet-4-5-20250929",
-            thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
-            default_search_source=row["default_search_source"]
-            if "default_search_source" in row.keys()
-            else "auto",
+            claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
+            thinking_budget=row.get("thinking_budget", 0),
+            default_search_source=row.get("default_search_source", "auto"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
