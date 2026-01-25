@@ -194,6 +194,13 @@ class CoreMemoryManager:
         elif operation == "append":
             existing_content = existing.content if existing else ""
             final_content = f"{existing_content}\n{content}".strip()
+
+            # For learnings block, limit to 10 most recent entries
+            if block_name == "learnings":
+                lines = [line for line in final_content.split("\n") if line.strip()]
+                if len(lines) > 10:
+                    final_content = "\n".join(lines[-10:])  # Keep most recent 10
+                    logger.debug("learnings_compacted", kept_entries=10)
         elif operation == "merge":
             # Deduplicate lines when merging
             existing_lines = set((existing.content if existing else "").split("\n"))

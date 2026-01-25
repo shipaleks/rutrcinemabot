@@ -142,6 +142,26 @@ TMDB_CREDITS_TOOL = {
     },
 }
 
+TMDB_TV_DETAILS_TOOL = {
+    "name": "tmdb_tv_details",
+    "description": (
+        "Получение детальной информации о сериале из TMDB. "
+        "Возвращает количество сезонов, статус (в производстве/завершён), "
+        "информацию о следующем эпизоде (дата выхода, номер сезона/эпизода). "
+        "Используй перед созданием монитора чтобы узнать актуальный сезон."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tmdb_id": {
+                "type": "integer",
+                "description": "ID сериала в TMDB",
+            },
+        },
+        "required": ["tmdb_id"],
+    },
+}
+
 KINOPOISK_SEARCH_TOOL = {
     "name": "kinopoisk_search",
     "description": (
@@ -831,6 +851,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
     PIRATEBAY_SEARCH_TOOL,
     TMDB_SEARCH_TOOL,
     TMDB_CREDITS_TOOL,
+    TMDB_TV_DETAILS_TOOL,
     KINOPOISK_SEARCH_TOOL,
     # User profile tools
     GET_USER_PROFILE_TOOL,

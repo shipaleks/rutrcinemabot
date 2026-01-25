@@ -104,6 +104,14 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 - Уже сохранённая информация (сначала проверь через `read_core_memory`)
 - Временный контекст без значения
 
+**Допустимые блоки для update_core_memory:**
+- `preferences` — качество видео, аудио, субтитры, любимые жанры
+- `watch_context` — оборудование, с кем смотрит
+- `active_context` — что сейчас смотрит (временный контекст)
+- `style` — стиль общения (verbose/brief/standard)
+- `instructions` — явные правила пользователя
+- `blocklist` — что не рекомендовать
+
 **ВАЖНО для instructions/blocklist:**
 - ВСЕГДА спрашивай подтверждение: "Запомнить это как постоянное правило?"
 
@@ -219,6 +227,7 @@ def get_system_prompt(
     user_profile_md: str | None = None,
     blocklist_items: list[dict[str, str]] | None = None,
     core_memory_content: str | None = None,
+    remember_requested: bool = False,
 ) -> str:
     """Get the system prompt with optional user context.
 
@@ -230,6 +239,7 @@ def get_system_prompt(
         user_profile_md: Full markdown profile (from read_user_profile tool) - LEGACY
         blocklist_items: List of blocked items for strict filtering
         core_memory_content: Rendered core memory blocks (new memory system)
+        remember_requested: User explicitly asked to save with #запомни
 
     Returns:
         Complete system prompt with user context appended.
@@ -237,6 +247,17 @@ def get_system_prompt(
     prompt = MEDIA_CONCIERGE_SYSTEM_PROMPT
 
     context_parts: list[str] = []
+
+    # Add remember instruction if requested
+    if remember_requested:
+        context_parts.append("\n\n---\n\n## ⚠️ ОБЯЗАТЕЛЬНОЕ СОХРАНЕНИЕ")
+        context_parts.append(
+            "Пользователь использовал команду #запомни. "
+            "ТЫ ОБЯЗАН сохранить следующую информацию в core memory "
+            "с помощью `update_core_memory`. Выбери подходящий блок "
+            "(preferences, watch_context, style, instructions, blocklist) "
+            "и сохрани информацию. Подтверди пользователю что запомнил."
+        )
 
     # Add core memory blocks (new system - takes priority)
     if core_memory_content:

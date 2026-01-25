@@ -118,6 +118,12 @@ SECTION_TEMPLATES = {
 {interactions}""",
     "conversation_highlights": """## Conversation History Highlights
 {highlights}""",
+    "letterboxd_import": """## Letterboxd Import
+{letterboxd_data}""",
+    "favorite_films": """## Favorite Films
+{favorites}""",
+    "disliked_films": """## Disliked Films
+{disliked}""",
 }
 
 
@@ -278,8 +284,9 @@ class ProfileManager:
         # Find and replace the section
         section_header = self._get_section_header(section)
         if not section_header:
-            logger.warning("unknown_section", section=section)
-            return profile_md
+            # For unknown sections, generate header from section name and add anyway
+            logger.warning("unknown_section_adding_anyway", section=section)
+            section_header = f"## {section.replace('_', ' ').title()}"
 
         # Parse profile and find section boundaries
         lines = profile_md.split("\n")
@@ -555,6 +562,9 @@ class ProfileManager:
             "blocklist": "## Blocklist",
             "notable_interactions": "## Notable Interactions",
             "conversation_highlights": "## Conversation History Highlights",
+            "letterboxd_import": "## Letterboxd Import",
+            "favorite_films": "## Favorite Films",
+            "disliked_films": "## Disliked Films",
         }
         return headers.get(section)
 

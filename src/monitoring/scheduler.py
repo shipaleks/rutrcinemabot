@@ -286,17 +286,13 @@ class MonitoringScheduler:
                         and monitor.tracking_mode == "episode"
                         and monitor.episode_number is not None
                     ):
-                        next_monitor_id = await self._create_next_episode_monitor(
-                            storage, monitor
-                        )
+                        next_monitor_id = await self._create_next_episode_monitor(storage, monitor)
 
                     # Get user's telegram_id for notification
                     user = await storage.get_user(release.user_id)
                     if user:
                         # Send notification with info about next episode if created
-                        await self._notify_user(
-                            user.telegram_id, release, monitor, next_monitor_id
-                        )
+                        await self._notify_user(user.telegram_id, release, monitor, next_monitor_id)
 
                         # Auto-download if enabled
                         if monitor.auto_download:
@@ -446,13 +442,40 @@ class MonitoringScheduler:
         Returns:
             New monitor ID if created, None otherwise
         """
-        if (
-            current_monitor.episode_number is None
-            or current_monitor.season_number is None
-        ):
+        if current_monitor.episode_number is None or current_monitor.season_number is None:
             return None
 
         next_episode = current_monitor.episode_number + 1
+
+        # Fetch release_date for next episode from TMDB
+        release_date = None
+        if current_monitor.tmdb_id:
+            try:
+                from src.media.tmdb import TMDBClient
+
+                async with TMDBClient() as tmdb:
+                    air_date_str = await tmdb.get_episode_air_date(
+                        current_monitor.tmdb_id,
+                        current_monitor.season_number,
+                        next_episode,
+                    )
+                    if air_date_str:
+                        release_date = datetime.fromisoformat(air_date_str)
+                        if release_date.tzinfo is None:
+                            release_date = release_date.replace(tzinfo=UTC)
+                        logger.info(
+                            "next_episode_air_date_fetched",
+                            tmdb_id=current_monitor.tmdb_id,
+                            season=current_monitor.season_number,
+                            episode=next_episode,
+                            air_date=air_date_str,
+                        )
+            except Exception as e:
+                logger.warning(
+                    "fetch_next_episode_air_date_failed",
+                    tmdb_id=current_monitor.tmdb_id,
+                    error=str(e),
+                )
 
         try:
             new_monitor = await storage.create_monitor(
@@ -465,6 +488,7 @@ class MonitoringScheduler:
                 tracking_mode="episode",
                 season_number=current_monitor.season_number,
                 episode_number=next_episode,
+                release_date=release_date,
             )
 
             logger.info(
@@ -473,6 +497,7 @@ class MonitoringScheduler:
                 season=current_monitor.season_number,
                 episode=next_episode,
                 new_monitor_id=new_monitor.id,
+                release_date=release_date.isoformat() if release_date else None,
             )
 
             return new_monitor.id
@@ -540,19 +565,23 @@ class MonitoringScheduler:
 
         # Add cancel next episode button if one was created
         if next_monitor_id:
-            buttons.append([
-                InlineKeyboardButton(
-                    "⏹️ Отменить следующий эпизод",
-                    callback_data=f"monitor_cancel_{next_monitor_id}",
-                ),
-            ])
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        "⏹️ Отменить следующий эпизод",
+                        callback_data=f"monitor_cancel_{next_monitor_id}",
+                    ),
+                ]
+            )
         else:
-            buttons.append([
-                InlineKeyboardButton(
-                    "🔕 Отменить мониторинг",
-                    callback_data=f"monitor_cancel_{release.monitor_id}",
-                ),
-            ])
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        "🔕 Отменить мониторинг",
+                        callback_data=f"monitor_cancel_{release.monitor_id}",
+                    ),
+                ]
+            )
 
         keyboard = InlineKeyboardMarkup(buttons)
 
