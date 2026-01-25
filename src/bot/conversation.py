@@ -590,9 +590,9 @@ async def handle_tmdb_credits(tool_input: dict[str, Any]) -> str:
                     "status": "success",
                     "source": "tmdb",
                     "tmdb_id": tmdb_id,
-                    "directors": [{"name": d.name} for d in directors],
-                    "writers": [{"name": w.name} for w in writers],
-                    "cast": [{"name": p.name, "character": p.character} for p in top_cast],
+                    "directors": [{"id": d.id, "name": d.name} for d in directors],
+                    "writers": [{"id": w.id, "name": w.name} for w in writers],
+                    "cast": [{"id": p.id, "name": p.name, "character": p.character} for p in top_cast],
                 },
                 ensure_ascii=False,
             )
