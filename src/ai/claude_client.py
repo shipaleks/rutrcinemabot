@@ -344,8 +344,13 @@ class ClaudeClient:
             )
 
             # Update params and continue conversation
-            params["messages"] = context.get_messages_for_api()
-            response = await self.client.messages.create(**params)
+            # Disable thinking for continuation - history may not be compatible
+            continuation_params = params.copy()
+            continuation_params["messages"] = context.get_messages_for_api()
+            if "thinking" in continuation_params:
+                del continuation_params["thinking"]
+                continuation_params["max_tokens"] = 16384
+            response = await self.client.messages.create(**continuation_params)
 
         # Max iterations reached
         logger.warning(
@@ -563,8 +568,14 @@ class ClaudeClient:
                 )
 
                 # Continue conversation (non-streaming for tool continuations)
-                params["messages"] = context.get_messages_for_api()
-                response = await self.client.messages.create(**params)
+                # Disable thinking for continuation - history may not be compatible
+                continuation_params = params.copy()
+                continuation_params["messages"] = context.get_messages_for_api()
+                if "thinking" in continuation_params:
+                    del continuation_params["thinking"]
+                    # Reset max_tokens to normal value without thinking overhead
+                    continuation_params["max_tokens"] = 16384
+                response = await self.client.messages.create(**continuation_params)
 
                 # Extract final text from continued response
                 final_text = await self._process_response(response, context, params)
