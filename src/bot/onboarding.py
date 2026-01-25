@@ -291,7 +291,8 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             return True
         except ValueError:
             logger.warning("entity_deep_link_invalid_id", param=param)
-            return False
+            await message.reply_text("Некорректная ссылка на персону.")
+            return True
         except Exception as e:
             logger.warning("person_card_failed", error=str(e), param=param)
             await message.reply_text("Не удалось загрузить информацию о персоне.")
@@ -307,7 +308,8 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             return True
         except ValueError:
             logger.warning("entity_deep_link_invalid_id", param=param)
-            return False
+            await message.reply_text("Некорректная ссылка на фильм.")
+            return True
         except Exception as e:
             logger.warning("movie_card_failed", error=str(e), param=param)
             await message.reply_text("Не удалось загрузить информацию о фильме.")
@@ -323,7 +325,8 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             return True
         except ValueError:
             logger.warning("entity_deep_link_invalid_id", param=param)
-            return False
+            await message.reply_text("Некорректная ссылка на сериал.")
+            return True
         except Exception as e:
             logger.warning("tv_card_failed", error=str(e), param=param)
             await message.reply_text("Не удалось загрузить информацию о сериале.")
