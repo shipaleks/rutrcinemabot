@@ -96,11 +96,11 @@ CATEGORY_VIDEO_HD_TV = 208
 
 # Quality patterns for matching in titles
 # Using word boundaries to avoid false positives (e.g., DVDRip matching DV)
+# Note: 4K and 2160p are unified - both refer to the same quality
 QUALITY_PATTERNS = {
     "720p": [r"\b720p\b", r"\b720i\b", r"\bHD[\s._-]*720\b"],
     "1080p": [r"\b1080p\b", r"\b1080i\b", r"\bFull[\s._-]*HD\b", r"\bFHD\b"],
-    "4K": [r"\b4K\b", r"\bUHD\b", r"\bUltra[\s._-]*HD\b"],
-    "2160p": [r"\b2160p\b", r"\b2160i\b"],
+    "4K": [r"\b4K\b", r"\bUHD\b", r"\bUltra[\s._-]*HD\b", r"\b2160p\b", r"\b2160i\b"],
     "HDR": [r"\bHDR10\b", r"\bHDR\b", r"\bDolby[\s._-]*Vision\b"],
 }
 

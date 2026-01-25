@@ -68,12 +68,12 @@ class TorAPIResult:
 
 
 # Quality detection patterns
+# Note: 4K and 2160p are unified - both refer to the same quality
 QUALITY_PATTERNS = {
-    "4K": [r"4k", r"uhd", r"2160p", r"ultra\s*hd"],
+    "4K": [r"4k", r"uhd", r"2160p", r"2160i", r"ultra\s*hd"],
     "1080p": [r"1080p", r"fullhd", r"full\s*hd", r"fhd"],
     "720p": [r"720p", r"hd(?!r)"],
     "HDR": [r"hdr10?\+?", r"dolby\s*vision", r"dv"],
-    "2160p": [r"2160p"],
 }
 
 

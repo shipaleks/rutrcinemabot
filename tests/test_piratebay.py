@@ -163,7 +163,8 @@ class TestDetectQuality:
         assert detect_quality("Movie.Ultra-HD.x265") == "4K"
 
     def test_detect_2160p(self):
-        assert detect_quality("Movie.2160p.BluRay") == "2160p"
+        # 2160p is now unified with 4K
+        assert detect_quality("Movie.2160p.BluRay") == "4K"
 
     def test_detect_hdr(self):
         assert detect_quality("Movie.2021.HDR.x265") == "HDR"
