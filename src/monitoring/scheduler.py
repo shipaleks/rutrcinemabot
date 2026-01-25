@@ -57,6 +57,10 @@ PUSH_MAX_HOUR = 21  # Latest hour to send pushes
 # Industry news settings
 NEWS_CHECK_INTERVAL_HOURS = 24  # Check news once per day
 
+# TMDB enrichment settings
+TMDB_ENRICHMENT_INTERVAL_HOURS = 6  # Enrich watched items every 6 hours
+TMDB_ENRICHMENT_BATCH_SIZE = 50  # Process 50 items per run
+
 
 def get_check_interval_hours(release_date: datetime | None) -> int:
     """Calculate check interval based on expected release date.
@@ -238,6 +242,16 @@ class MonitoringScheduler:
             trigger=IntervalTrigger(hours=NEWS_CHECK_INTERVAL_HOURS),
             id="industry_news",
             name="Industry News Check",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add TMDB enrichment for watched items - every 6 hours
+        self._scheduler.add_job(
+            self._enrich_watched_tmdb,
+            trigger=IntervalTrigger(hours=TMDB_ENRICHMENT_INTERVAL_HOURS),
+            id="tmdb_enrichment",
+            name="TMDB Watched Items Enrichment",
             replace_existing=True,
             max_instances=1,
         )
@@ -1269,6 +1283,100 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
 
         keyboard = InlineKeyboardMarkup(buttons) if buttons else None
         return message, keyboard
+
+    async def _enrich_watched_tmdb(self) -> None:
+        """Enrich watched items with TMDB data (director, tmdb_id).
+
+        Runs periodically to gradually populate TMDB data for films
+        imported from Letterboxd that don't have TMDB IDs.
+        """
+        logger.info("tmdb_enrichment_started")
+
+        try:
+            from src.media.tmdb import MediaType, TMDBClient
+
+            async with get_storage() as storage:
+                # Get watched items without TMDB data
+                items = await storage.get_watched_without_tmdb_data(
+                    limit=TMDB_ENRICHMENT_BATCH_SIZE
+                )
+
+                if not items:
+                    logger.debug("tmdb_enrichment_no_items")
+                    return
+
+                enriched = 0
+                failed = 0
+
+                async with TMDBClient() as tmdb:
+                    for item in items:
+                        try:
+                            # Search TMDB by title and year
+                            if item.media_type == "movie":
+                                results = await tmdb.search_movie(
+                                    query=item.title,
+                                    year=item.year,
+                                )
+                            else:
+                                results = await tmdb.search_tv(
+                                    query=item.title,
+                                    year=item.year,
+                                )
+
+                            if not results:
+                                failed += 1
+                                continue
+
+                            # Get the best match
+                            best_match = results[0]
+                            tmdb_id = best_match.id
+
+                            if not tmdb_id:
+                                failed += 1
+                                continue
+
+                            # Get director info for movies
+                            director = None
+                            if item.media_type == "movie":
+                                credits = await tmdb.get_credits(tmdb_id, MediaType.MOVIE)
+                                if credits:
+                                    directors = credits.get_directors()
+                                    if directors:
+                                        director = directors[0].name
+
+                            # Update the watched item
+                            await storage.update_watched_tmdb_data(
+                                watched_id=item.id,
+                                tmdb_id=tmdb_id,
+                                director=director,
+                            )
+
+                            enriched += 1
+
+                            logger.debug(
+                                "tmdb_enriched_item",
+                                title=item.title,
+                                tmdb_id=tmdb_id,
+                                director=director,
+                            )
+
+                        except Exception as e:
+                            logger.warning(
+                                "tmdb_enrichment_item_failed",
+                                title=item.title,
+                                error=str(e),
+                            )
+                            failed += 1
+
+                logger.info(
+                    "tmdb_enrichment_completed",
+                    enriched=enriched,
+                    failed=failed,
+                    total=len(items),
+                )
+
+        except Exception as e:
+            logger.exception("tmdb_enrichment_failed", error=str(e))
 
     async def _auto_download(self, release: FoundRelease) -> None:
         """Automatically send release to seedbox.
