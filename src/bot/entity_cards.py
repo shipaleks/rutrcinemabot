@@ -44,9 +44,25 @@ async def format_person_card(person_id: int) -> tuple[str, str | None]:
         person = await tmdb.get_person(person_id)
         credits = await tmdb.get_person_movie_credits(person_id)
 
-    # Combine cast and crew, sort by popularity, take top 5
-    all_works = credits.get("cast", []) + credits.get("crew", [])
-    # Deduplicate by movie ID
+    # Prioritize work based on what the person is known for
+    known_for = person.get("known_for_department", "Acting")
+    cast_works = credits.get("cast", [])
+    crew_works = credits.get("crew", [])
+
+    # For directors/writers/producers, prioritize crew work; for actors, prioritize cast
+    if known_for in ("Directing", "Writing", "Production"):
+        # Filter crew to main roles (Director, Writer, Producer, etc.)
+        main_crew = [w for w in crew_works if w.get("job") in (
+            "Director", "Writer", "Screenplay", "Producer", "Executive Producer"
+        )]
+        primary_works = main_crew if main_crew else crew_works
+        secondary_works = cast_works
+    else:
+        primary_works = cast_works
+        secondary_works = crew_works
+
+    # Combine with primary first, deduplicate by movie ID
+    all_works = primary_works + secondary_works
     seen_ids: set[int] = set()
     unique_works = []
     for work in all_works:
