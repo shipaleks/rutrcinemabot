@@ -225,6 +225,15 @@ class Movie(BaseModel):
         return [g.name for g in self.genres]
 
 
+class NextEpisode(BaseModel):
+    """Information about next episode to air."""
+
+    air_date: str = ""
+    episode_number: int = 0
+    season_number: int = 0
+    name: str = ""
+
+
 class TVShow(BaseModel):
     """TV show information from TMDB."""
 
@@ -247,6 +256,8 @@ class TVShow(BaseModel):
     number_of_episodes: int = 0
     in_production: bool = False
     production_companies: list[ProductionCompany] = Field(default_factory=list)
+    next_episode_to_air: NextEpisode | None = None
+    last_episode_to_air: NextEpisode | None = None
 
     def get_poster_url(self, size: str = "w500") -> str | None:
         """Get full URL for poster image."""
@@ -716,6 +727,47 @@ class TMDBClient:
         logger.info("tmdb_get_movie", movie_id=movie_id, title=movie.title)
         return movie
 
+    async def get_episode_air_date(
+        self,
+        tv_id: int,
+        season_number: int,
+        episode_number: int,
+    ) -> str | None:
+        """Get air date for a specific episode.
+
+        Args:
+            tv_id: TMDB TV show ID
+            season_number: Season number (1-based)
+            episode_number: Episode number (1-based)
+
+        Returns:
+            Air date string (YYYY-MM-DD) or None if not available
+
+        Raises:
+            TMDBNotFoundError: Episode not found
+        """
+        try:
+            data = await self._request(
+                f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
+            )
+            air_date = data.get("air_date")
+            logger.info(
+                "tmdb_get_episode_air_date",
+                tv_id=tv_id,
+                season=season_number,
+                episode=episode_number,
+                air_date=air_date,
+            )
+            return air_date
+        except TMDBNotFoundError:
+            logger.debug(
+                "tmdb_episode_not_found",
+                tv_id=tv_id,
+                season=season_number,
+                episode=episode_number,
+            )
+            return None
+
     async def get_tv_show(self, tv_id: int) -> TVShow:
         """Get detailed TV show information.
 
@@ -729,6 +781,27 @@ class TMDBClient:
             TMDBNotFoundError: TV show not found
         """
         data = await self._request(f"/tv/{tv_id}")
+
+        # Parse next/last episode info
+        next_ep_data = data.get("next_episode_to_air")
+        next_episode = None
+        if next_ep_data:
+            next_episode = NextEpisode(
+                air_date=next_ep_data.get("air_date", ""),
+                episode_number=next_ep_data.get("episode_number", 0),
+                season_number=next_ep_data.get("season_number", 0),
+                name=next_ep_data.get("name", ""),
+            )
+
+        last_ep_data = data.get("last_episode_to_air")
+        last_episode = None
+        if last_ep_data:
+            last_episode = NextEpisode(
+                air_date=last_ep_data.get("air_date", ""),
+                episode_number=last_ep_data.get("episode_number", 0),
+                season_number=last_ep_data.get("season_number", 0),
+                name=last_ep_data.get("name", ""),
+            )
 
         tv_show = TVShow(
             id=data["id"],
@@ -752,6 +825,8 @@ class TMDBClient:
             production_companies=[
                 ProductionCompany(**c) for c in data.get("production_companies", [])
             ],
+            next_episode_to_air=next_episode,
+            last_episode_to_air=last_episode,
         )
 
         logger.info("tmdb_get_tv_show", tv_id=tv_id, name=tv_show.name)

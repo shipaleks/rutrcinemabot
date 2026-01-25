@@ -530,26 +530,6 @@ async def _save_audio_and_complete(query, context: ContextTypes.DEFAULT_TYPE, au
                     video_quality=quality,
                     audio_language=audio,
                 )
-                # Sync settings to profile
-                from src.user.profile import ProfileManager
-
-                profile_manager = ProfileManager(storage)
-                await profile_manager.sync_from_preferences(db_user.id)
-
-                # Save watch context to profile (with human-readable names)
-                if primary_device or audio_setup or viewing_partners:
-                    device_names = dict(DEVICE_OPTIONS)
-                    audio_setup_names = dict(AUDIO_SETUP_OPTIONS)
-                    partner_names = dict(VIEWING_PARTNERS_OPTIONS)
-
-                    await profile_manager.update_watch_context(
-                        db_user.id,
-                        primary_device=device_names.get(primary_device) if primary_device else None,
-                        audio_setup=audio_setup_names.get(audio_setup) if audio_setup else None,
-                        viewing_partners=partner_names.get(viewing_partners)
-                        if viewing_partners
-                        else None,
-                    )
 
                 # Initialize Core Memory with onboarding data
                 try:
@@ -785,7 +765,6 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
         from src.services.letterboxd_export import (
             LetterboxdExportParser,
             extract_review_style,
-            format_analysis_for_profile,
         )
 
         parser = LetterboxdExportParser()
@@ -795,47 +774,55 @@ async def handle_letterboxd_file(update: Update, context: ContextTypes.DEFAULT_T
         async with get_storage() as storage:
             db_user = await storage.get_user_by_telegram_id(user.id)
             if db_user:
-                from src.user.profile import ProfileManager
+                # Save Letterboxd data to Core Memory
+                from src.user.memory import CoreMemoryManager
 
-                profile_manager = ProfileManager(storage)
+                memory_manager = CoreMemoryManager(storage)
 
-                # Format analysis for profile
-                profile_section = format_analysis_for_profile(analysis)
+                # Build preferences content from Letterboxd analysis
+                prefs_parts = []
+                if analysis.favorites:
+                    top_films = ", ".join(f.name for f in analysis.favorites[:5])
+                    prefs_parts.append(f"Favorites: {top_films}")
+
+                if analysis.average_rating:
+                    if analysis.average_rating >= 4.0:
+                        prefs_parts.append("Rating style: generous")
+                    elif analysis.average_rating <= 2.5:
+                        prefs_parts.append("Rating style: critical")
 
                 # Add review style if available
                 review_style = extract_review_style(analysis.review_samples)
                 if review_style:
-                    profile_section += f"\n**Review Style:** {review_style}"
+                    prefs_parts.append(f"Review style: {review_style}")
 
-                await profile_manager.update_section(
-                    db_user.id,
-                    "Letterboxd Import",
-                    profile_section,
-                )
-
-                # Also save favorites to separate section
-                if analysis.favorites:
-                    favorites_text = ", ".join(
-                        f"{f.name} ({f.year})" if f.year else f.name
-                        for f in analysis.favorites[:15]
-                    )
-                    await profile_manager.update_section(
+                if prefs_parts:
+                    letterboxd_prefs = "\n".join(prefs_parts)
+                    await memory_manager.update_block(
                         db_user.id,
-                        "Favorite Films",
-                        favorites_text,
+                        "preferences",
+                        letterboxd_prefs,
+                        operation="append",
                     )
 
-                # Save disliked to blocklist section
+                # Save disliked films to blocklist
                 if analysis.hated or analysis.disliked:
-                    disliked_all = analysis.hated + analysis.disliked[:10]
-                    disliked_text = ", ".join(
-                        f"{f.name} ({f.year})" if f.year else f.name for f in disliked_all[:15]
-                    )
-                    await profile_manager.update_section(
+                    disliked_all = analysis.hated + analysis.disliked[:5]
+                    disliked_text = ", ".join(f"{f.name}" for f in disliked_all[:10])
+                    blocklist_content = f"Disliked films: {disliked_text}"
+                    await memory_manager.update_block(
                         db_user.id,
-                        "Disliked Films",
-                        disliked_text,
+                        "blocklist",
+                        blocklist_content,
+                        operation="append",
                     )
+
+                logger.info(
+                    "letterboxd_saved_to_core_memory",
+                    user_id=user.id,
+                    has_favorites=bool(analysis.favorites),
+                    has_disliked=bool(analysis.hated or analysis.disliked),
+                )
 
                 # Save films to watched and watchlist tables
                 (
@@ -949,21 +936,22 @@ async def handle_movies_input(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     logger.info("movies_input", user_id=user.id if user else None, movies=movies)
 
-    # Save to profile
+    # Save to Core Memory
     try:
-        from src.user.profile import ProfileManager
+        from src.user.memory import CoreMemoryManager
 
         async with get_storage() as storage:
             db_user = await storage.get_user_by_telegram_id(user.id)
             if db_user:
-                profile_manager = ProfileManager(storage)
-                await profile_manager.update_section(
+                memory_manager = CoreMemoryManager(storage)
+                await memory_manager.update_block(
                     db_user.id,
-                    "Favorite Films",
-                    movies,
+                    "preferences",
+                    f"Favorite movies: {movies}",
+                    operation="append",
                 )
     except Exception as e:
-        logger.warning("profile_update_error", error=str(e))
+        logger.warning("core_memory_update_error", error=str(e))
 
     await message.reply_text(
         DEVICE_QUESTION,
@@ -1152,12 +1140,16 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
                     await storage.update_preferences(user_id=db_user.id, video_quality=quality)
-                    # Sync updated settings to profile
-                    from src.user.profile import ProfileManager
+                    # Sync updated settings to Core Memory
+                    from src.user.memory import CoreMemoryManager
 
-                    profile_manager = ProfileManager(storage)
-                    await profile_manager.sync_from_preferences(db_user.id)
+                    memory_manager = CoreMemoryManager(storage)
                     prefs = await storage.get_preferences(db_user.id)
+                    if prefs:
+                        prefs_content = f"Quality: {prefs.video_quality or '1080p'}\nAudio: {prefs.audio_language or 'ru'}"
+                        await memory_manager.update_block(
+                            db_user.id, "preferences", prefs_content, operation="replace"
+                        )
                     await query.edit_message_text(
                         f"Качество: **{quality}**",
                         parse_mode="Markdown",
@@ -1175,12 +1167,16 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
                     await storage.update_preferences(user_id=db_user.id, audio_language=audio)
-                    # Sync updated settings to profile
-                    from src.user.profile import ProfileManager
+                    # Sync updated settings to Core Memory
+                    from src.user.memory import CoreMemoryManager
 
-                    profile_manager = ProfileManager(storage)
-                    await profile_manager.sync_from_preferences(db_user.id)
+                    memory_manager = CoreMemoryManager(storage)
                     prefs = await storage.get_preferences(db_user.id)
+                    if prefs:
+                        prefs_content = f"Quality: {prefs.video_quality or '1080p'}\nAudio: {prefs.audio_language or 'ru'}"
+                        await memory_manager.update_block(
+                            db_user.id, "preferences", prefs_content, operation="replace"
+                        )
                     await query.edit_message_text(
                         f"Аудио: **{audio_display}**",
                         parse_mode="Markdown",

@@ -82,6 +82,7 @@ class ConversationContext:
     user_profile_md: str | None = None
     core_memory_content: str | None = None
     telegram_user_id: int | None = None
+    remember_requested: bool = False  # User explicitly asked to save (#запомни)
     max_history: int = 20
     last_search_result_ids: list[str] = field(default_factory=list)  # For re-showing buttons
 
@@ -178,6 +179,7 @@ class ClaudeClient:
             user_preferences=context.user_preferences,
             user_profile_md=context.user_profile_md,
             core_memory_content=context.core_memory_content,
+            remember_requested=context.remember_requested,
         )
 
         # Prepare API call parameters
@@ -393,6 +395,7 @@ class ClaudeClient:
             user_preferences=context.user_preferences,
             user_profile_md=context.user_profile_md,
             core_memory_content=context.core_memory_content,
+            remember_requested=context.remember_requested,
         )
 
         # Prepare API call parameters

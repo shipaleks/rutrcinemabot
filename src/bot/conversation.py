@@ -65,6 +65,30 @@ def clear_conversation_context(user_id: int) -> None:
         _conversation_contexts[user_id].clear()
 
 
+def is_valid_magnet(magnet: str | None) -> bool:
+    """Check if a magnet link is valid.
+
+    Args:
+        magnet: Magnet link to validate.
+
+    Returns:
+        True if valid magnet link, False otherwise.
+    """
+    if not magnet:
+        return False
+    # Valid magnet must start with "magnet:?" and contain btih (BitTorrent info hash)
+    if not magnet.startswith("magnet:?"):
+        return False
+    if "btih:" not in magnet.lower() and "xt=urn:btih:" not in magnet.lower():
+        return False
+    # Reject known placeholders
+    placeholders = ["PIRATEBAY_MAGNET", "PLACEHOLDER", "UNKNOWN", "N/A"]
+    for ph in placeholders:
+        if ph in magnet.upper():
+            return False
+    return True
+
+
 def cache_search_result(result_id: str, result_data: dict[str, Any]) -> None:
     """Cache a search result for later download.
 
@@ -72,6 +96,11 @@ def cache_search_result(result_id: str, result_data: dict[str, Any]) -> None:
         result_id: Unique ID for the result.
         result_data: Result data including magnet link.
     """
+    # Validate magnet before caching - clear invalid magnets
+    magnet = result_data.get("magnet", "")
+    if not is_valid_magnet(magnet):
+        result_data["magnet"] = ""
+
     _search_results_cache[result_id] = result_data
     # Keep cache size reasonable
     if len(_search_results_cache) > 1000:
@@ -524,6 +553,72 @@ async def handle_tmdb_credits(tool_input: dict[str, Any]) -> str:
         )
 
 
+async def handle_tmdb_tv_details(tool_input: dict[str, Any]) -> str:
+    """Handle tmdb_tv_details tool call.
+
+    Returns detailed TV show info including seasons and next episode.
+
+    Args:
+        tool_input: Tool parameters (tmdb_id).
+
+    Returns:
+        JSON string with TV show details.
+    """
+    tmdb_id = tool_input.get("tmdb_id")
+
+    if tmdb_id is None:
+        return json.dumps(
+            {"status": "error", "error": "tmdb_id is required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("tmdb_tv_details", tmdb_id=tmdb_id)
+
+    try:
+        async with TMDBClient() as client:
+            tv_show = await client.get_tv_show(int(tmdb_id))
+
+            result = {
+                "status": "success",
+                "source": "tmdb",
+                "tmdb_id": tmdb_id,
+                "name": tv_show.name,
+                "show_status": tv_show.status,
+                "in_production": tv_show.in_production,
+                "number_of_seasons": tv_show.number_of_seasons,
+                "number_of_episodes": tv_show.number_of_episodes,
+                "first_air_date": tv_show.first_air_date,
+                "last_air_date": tv_show.last_air_date,
+            }
+
+            # Add next episode info if available
+            if tv_show.next_episode_to_air:
+                result["next_episode"] = {
+                    "season": tv_show.next_episode_to_air.season_number,
+                    "episode": tv_show.next_episode_to_air.episode_number,
+                    "air_date": tv_show.next_episode_to_air.air_date,
+                    "name": tv_show.next_episode_to_air.name,
+                }
+
+            # Add last episode info if available
+            if tv_show.last_episode_to_air:
+                result["last_episode"] = {
+                    "season": tv_show.last_episode_to_air.season_number,
+                    "episode": tv_show.last_episode_to_air.episode_number,
+                    "air_date": tv_show.last_episode_to_air.air_date,
+                    "name": tv_show.last_episode_to_air.name,
+                }
+
+            return json.dumps(result, ensure_ascii=False)
+
+    except TMDBError as e:
+        logger.warning("tmdb_tv_details_failed", error=str(e))
+        return json.dumps(
+            {"status": "error", "source": "tmdb", "error": str(e)},
+            ensure_ascii=False,
+        )
+
+
 async def handle_kinopoisk_search(tool_input: dict[str, Any]) -> str:
     """Handle kinopoisk_search tool call.
 
@@ -858,6 +953,69 @@ async def handle_read_core_memory(tool_input: dict[str, Any]) -> str:
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
+def _normalize_block_name(block_name: str) -> str:
+    """Normalize block name to canonical form.
+
+    Maps common variations to standard block names.
+
+    Args:
+        block_name: Input block name (may be non-standard).
+
+    Returns:
+        Normalized block name.
+    """
+    if not block_name:
+        return block_name
+
+    # Lowercase and strip
+    name = block_name.lower().strip()
+
+    # Map common variations
+    mappings = {
+        # Preferences variations
+        "subtitle preferences": "preferences",
+        "video preferences": "preferences",
+        "audio preferences": "preferences",
+        "quality preferences": "preferences",
+        "content preferences": "preferences",
+        "prefs": "preferences",
+        # Watch context variations
+        "watch context": "watch_context",
+        "viewing context": "watch_context",
+        "equipment": "watch_context",
+        "device": "watch_context",
+        # Style variations
+        "communication style": "style",
+        "communication": "style",
+        # Instructions variations
+        "user instructions": "instructions",
+        "rules": "instructions",
+        "explicit instructions": "instructions",
+        # Blocklist variations
+        "block list": "blocklist",
+        "blacklist": "blocklist",
+        "avoid": "blocklist",
+    }
+
+    # Check direct mapping
+    if name in mappings:
+        return mappings[name]
+
+    # Check if already valid
+    valid_names = [
+        "preferences",
+        "watch_context",
+        "active_context",
+        "style",
+        "instructions",
+        "blocklist",
+    ]
+    if name.replace(" ", "_") in valid_names:
+        return name.replace(" ", "_")
+
+    return block_name
+
+
 async def handle_update_core_memory(tool_input: dict[str, Any]) -> str:
     """Handle update_core_memory tool call.
 
@@ -871,9 +1029,14 @@ async def handle_update_core_memory(tool_input: dict[str, Any]) -> str:
     from src.user.storage import CORE_MEMORY_BLOCKS
 
     user_id_input = tool_input.get("user_id")
-    block_name = tool_input.get("block_name")
+    block_name_raw = tool_input.get("block_name", "")
     content = tool_input.get("content")
     operation = tool_input.get("operation", "replace")
+
+    # Normalize block name
+    block_name = _normalize_block_name(block_name_raw)
+    if block_name != block_name_raw:
+        logger.info("block_name_normalized", original=block_name_raw, normalized=block_name)
 
     if not all([user_id_input, block_name, content]):
         return json.dumps(
@@ -1264,6 +1427,32 @@ async def handle_rate_content(tool_input: dict[str, Any]) -> str:
             )
 
             if item:
+                # Auto-capture conversation highlights for notable ratings
+                if rating >= 9 or rating <= 2:
+                    try:
+                        from src.user.memory import CoreMemoryManager
+
+                        memory_manager = CoreMemoryManager(storage)
+                        title = item.title or f"TMDB:{tmdb_id}"
+                        if rating >= 9:
+                            highlight = f"Loved '{title}' ({rating}/10)"
+                        else:
+                            highlight = f"Disliked '{title}' ({rating}/10)"
+                        await memory_manager.update_block(
+                            user_id,
+                            "learnings",
+                            highlight,
+                            operation="append",
+                        )
+                        logger.info(
+                            "conversation_highlight_captured",
+                            user_id=user_id,
+                            title=title,
+                            rating=rating,
+                        )
+                    except Exception as hl_error:
+                        logger.warning("highlight_capture_failed", error=str(hl_error))
+
                 return json.dumps(
                     {
                         "status": "success",
@@ -1484,6 +1673,28 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
     )
 
     try:
+        # Fetch release_date from TMDB for TV episodes
+        release_date = None
+        if tmdb_id and media_type == "tv" and season_number and episode_number:
+            try:
+                async with TMDBClient() as tmdb:
+                    air_date_str = await tmdb.get_episode_air_date(
+                        tmdb_id, season_number, episode_number
+                    )
+                    if air_date_str:
+                        from datetime import datetime
+
+                        release_date = datetime.fromisoformat(air_date_str)
+                        logger.info(
+                            "monitor_release_date_fetched",
+                            tmdb_id=tmdb_id,
+                            season=season_number,
+                            episode=episode_number,
+                            release_date=air_date_str,
+                        )
+            except Exception as e:
+                logger.warning("fetch_episode_air_date_failed", error=str(e))
+
         async with get_storage() as storage:
             monitor = await storage.create_monitor(
                 user_id=user_id,
@@ -1495,6 +1706,7 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
                 tracking_mode=tracking_mode,
                 season_number=season_number,
                 episode_number=episode_number,
+                release_date=release_date,
             )
 
             # Sync to active_context memory block
@@ -1734,6 +1946,7 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "piratebay_search": handle_piratebay_search,
             "tmdb_search": handle_tmdb_search,
             "tmdb_credits": handle_tmdb_credits,
+            "tmdb_tv_details": handle_tmdb_tv_details,
             "kinopoisk_search": handle_kinopoisk_search,
             # User profile tools (legacy)
             "get_user_profile": handle_get_user_profile,
@@ -1996,11 +2209,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_message = update.message.text
 
+    # Detect #запомни / #remember command
+    remember_requested = False
+    remember_prefixes = ("#запомни", "#remember", "#запомнить")
+    for prefix in remember_prefixes:
+        if user_message.lower().startswith(prefix):
+            remember_requested = True
+            # Remove prefix from message for cleaner processing
+            user_message = user_message[len(prefix) :].strip()
+            logger.info("remember_command_detected", user_id=user.id)
+            break
+
     logger.info(
         "message_received",
         user_id=user.id,
         username=user.username,
         message_length=len(user_message),
+        remember_requested=remember_requested,
     )
 
     # Get conversation context
@@ -2008,6 +2233,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Set telegram user ID for tool calls
     conv_context.telegram_user_id = user.id
+
+    # Set remember flag in context
+    conv_context.remember_requested = remember_requested
 
     # Load user preferences and profile into context
     try:
@@ -2166,6 +2394,10 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
     magnet = result.get("magnet", "")
     torrent_id = result.get("torrent_id", "")
     source = result.get("source", "")
+
+    # Validate magnet - clear invalid/placeholder magnets
+    if not is_valid_magnet(magnet):
+        magnet = ""
 
     logger.info(
         "download_requested",
@@ -2714,6 +2946,14 @@ async def _handle_monitor_download(query: Any, telegram_id: int, monitor_id: int
             return
 
         magnet = monitor.found_data["magnet"]
+
+        # Validate magnet - reject placeholders
+        if not is_valid_magnet(magnet):
+            logger.warning("invalid_monitor_magnet", monitor_id=monitor_id, magnet=magnet[:50])
+            await query.edit_message_text(
+                "Magnet-ссылка недействительна. Попробуйте поиск вручную."
+            )
+            return
         title = monitor.title
         quality = monitor.found_data.get("quality", "")
         size = monitor.found_data.get("size", "")
