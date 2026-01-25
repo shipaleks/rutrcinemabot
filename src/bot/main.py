@@ -293,19 +293,15 @@ async def run_webhook(application: Application) -> None:
     await application.initialize()
     await application.start()
 
-    # Set up webhook
-    await application.bot.set_webhook(
-        url=f"{webhook_url}{webhook_path}",
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
-
     # Start the webhook server for Telegram updates
+    # Note: start_webhook calls set_webhook internally, don't call it twice
     await application.updater.start_webhook(
         listen="0.0.0.0",
         port=port,
         url_path=webhook_path,
         webhook_url=f"{webhook_url}{webhook_path}",
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
     )
 
     # Start monitoring scheduler
