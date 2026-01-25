@@ -152,11 +152,16 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 - Фильмы: `[Dune: Part Two](https://t.me/trmoviebot?start=m_693134)`
 - Сериалы: `[Breaking Bad](https://t.me/trmoviebot?start=t_1396)`
 
+**Как получить TMDB ID:**
+- Фильмы/сериалы: из tmdb_search (поле "id")
+- Персоны: из tmdb_credits (поле "id" у режиссёров/актёров) ИЛИ из tmdb_person_search
+- **ВАЖНО:** Если не знаешь ID персоны — вызови tmdb_person_search по имени!
+
 **Правила:**
-1. TMDB ID берёшь из результатов tmdb_search или tmdb_credits (поле "id")
-2. Префиксы: p_ = person, m_ = movie, t_ = tv
-3. Текст ссылки = оригинальное или английское название
-4. КАЖДОЕ упоминание сущности = ссылка, без исключений
+1. Префиксы: p_ = person, m_ = movie, t_ = tv
+2. Текст ссылки = оригинальное или английское название
+3. КАЖДОЕ упоминание сущности = ссылка, без исключений
+4. НИКОГДА не выдумывай ID — используй только ID из результатов инструментов!
 
 **Примеры правильного использования:**
 - "Рекомендую [Arrival](https://t.me/trmoviebot?start=m_329865) — отличный sci-fi от [Denis Villeneuve](https://t.me/trmoviebot?start=p_137427)"
