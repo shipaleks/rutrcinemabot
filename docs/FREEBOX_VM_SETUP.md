@@ -1,156 +1,156 @@
-# Freebox VM Setup Guide
+# Настройка VM на Freebox для синхронизации
 
-This guide explains how to set up automatic sync from your seedbox to Freebox Ultra NAS.
+Инструкция по настройке автоматической синхронизации с seedbox на NAS Freebox Ultra.
 
-## Overview
+## Обзор
 
-The sync system:
-1. Runs every 30 minutes on a Freebox VM
-2. Rsyncs completed downloads from seedbox
-3. Sorts files into Movies/TV Shows folders
-4. Notifies the bot when files are ready
-5. Cleans up the seedbox
+Система синхронизации:
+1. Запускается каждые 30 минут на VM Freebox
+2. Синхронизирует завершённые загрузки с seedbox через rsync
+3. Сортирует файлы в папки Фильмы/Сериалы
+4. Уведомляет бота, когда файлы готовы
+5. Очищает seedbox
 
-## Prerequisites
+## Требования
 
-- Freebox Ultra or Delta (with VM support)
-- Ultra.cc seedbox account (see [SEEDBOX_SETUP.md](SEEDBOX_SETUP.md))
-- SSH access to your seedbox
+- Freebox Ultra или Delta (с поддержкой VM)
+- Аккаунт seedbox на Ultra.cc (см. [SEEDBOX_SETUP.md](SEEDBOX_SETUP.md))
+- SSH-доступ к seedbox
 
-## 1. Create a Freebox VM
+## 1. Создание VM на Freebox
 
-1. Open Freebox OS: https://mafreebox.free.fr
-2. Go to **VMs** section
-3. Click **Create a new VM**
-4. Configure:
-   - **Name**: `mediabot`
-   - **System**: Debian 12
-   - **RAM**: 1 GB
-   - **Disk**: 16 GB
-   - **Network**: Bridge mode
-   - Check **Access to Freebox disk**
-5. Create and start the VM
+1. Открой Freebox OS: https://mafreebox.free.fr
+2. Перейди в раздел **VMs**
+3. Нажми **Создать новую VM**
+4. Настрой:
+   - **Имя**: `mediabot`
+   - **Система**: Debian 12
+   - **RAM**: 1 ГБ
+   - **Диск**: 16 ГБ
+   - **Сеть**: Bridge mode
+   - Отметь **Доступ к диску Freebox**
+5. Создай и запусти VM
 
-## 2. Initial VM Setup
+## 2. Начальная настройка VM
 
-Connect to the VM via Freebox OS console or SSH.
+Подключись к VM через консоль Freebox OS или SSH.
 
-### Install Dependencies
+### Установка зависимостей
 
 ```bash
 sudo apt update
 sudo apt install -y rsync sshpass curl jq cron
 ```
 
-### Create User and Directories
+### Создание пользователя и директорий
 
 ```bash
-# Create dedicated user
+# Создаём отдельного пользователя
 sudo useradd -m -s /bin/bash mediabot
 
-# Create sync directories
+# Создаём директории для синхронизации
 sudo mkdir -p /home/mediabot/sync/logs
 sudo chown -R mediabot:mediabot /home/mediabot
 ```
 
-### Mount Freebox Storage
+### Монтирование хранилища Freebox
 
-The Freebox disk should be automatically available at `/mnt/Freebox` or similar.
-Verify with:
+Диск Freebox должен быть автоматически доступен по пути `/mnt/Freebox` или аналогичному.
+Проверь:
 
 ```bash
 ls /mnt/Freebox/Space/
 ```
 
-If not mounted, add to `/etc/fstab`:
+Если не примонтирован, добавь в `/etc/fstab`:
 ```
 //mafreebox.free.fr/Space /mnt/Freebox/Space cifs credentials=/home/mediabot/.smbcredentials,uid=mediabot,gid=mediabot 0 0
 ```
 
-## 3. Install Sync Scripts
+## 3. Установка скриптов синхронизации
 
-### Copy Scripts
+### Копирование скриптов
 
-From the bot repository, copy the scripts:
+Из репозитория бота скопируй скрипты:
 
 ```bash
-# As mediabot user
+# Под пользователем mediabot
 sudo -u mediabot -i
 
-# Create directory structure
+# Создаём структуру директорий
 mkdir -p ~/sync/logs
 
-# Download scripts (or copy from repo)
-# Option 1: Clone repo
-git clone https://github.com/YOUR_REPO/media-concierge-bot.git /tmp/bot
+# Скачиваем скрипты (или копируем из репозитория)
+# Вариант 1: Клонируем репозиторий
+git clone https://github.com/ТВОЙ_РЕПО/media-concierge-bot.git /tmp/bot
 cp /tmp/bot/scripts/sync_seedbox.sh ~/sync/
 cp /tmp/bot/scripts/config.env.template ~/sync/config.env
 
-# Option 2: Create manually (copy content from repository)
+# Вариант 2: Создаём вручную (копируем содержимое из репозитория)
 ```
 
-### Configure Credentials
+### Настройка credentials
 
 ```bash
-# Edit config
+# Редактируем конфиг
 nano ~/sync/config.env
 
-# Secure the file
+# Защищаем файл
 chmod 600 ~/sync/config.env
 ```
 
-Fill in:
-- `SEEDBOX_HOST`: Your Ultra.cc server (e.g., `john.sb01.usbx.me`)
-- `SEEDBOX_USER`: Your username
-- `SEEDBOX_PASS`: Your password
-- `SEEDBOX_PATH`: Completed downloads path (usually `/home/USERNAME/Downloads/completed`)
-- `NAS_MOVIES`: Local movies folder
-- `NAS_TV`: Local TV shows folder
-- `BOT_API_URL`: Your bot's Koyeb URL
-- `SYNC_API_KEY`: API key for notifications
+Заполни:
+- `SEEDBOX_HOST`: Твой сервер Ultra.cc (например, `john.sb01.usbx.me`)
+- `SEEDBOX_USER`: Твой логин
+- `SEEDBOX_PASS`: Твой пароль
+- `SEEDBOX_PATH`: Путь к завершённым загрузкам (обычно `/home/USERNAME/Downloads/completed`)
+- `NAS_MOVIES`: Локальная папка для фильмов
+- `NAS_TV`: Локальная папка для сериалов
+- `BOT_API_URL`: URL бота на Koyeb
+- `SYNC_API_KEY`: API-ключ для уведомлений
 
-### Make Script Executable
+### Делаем скрипт исполняемым
 
 ```bash
 chmod +x ~/sync/sync_seedbox.sh
 ```
 
-## 4. Test the Script
+## 4. Тестирование скрипта
 
-Run manually first:
+Сначала запусти вручную:
 
 ```bash
 ~/sync/sync_seedbox.sh
 ```
 
-Check the log:
+Проверь лог:
 ```bash
 tail -f ~/sync/logs/sync.log
 ```
 
-## 5. Set Up Cron Job
+## 5. Настройка Cron
 
 ```bash
-# Edit crontab
+# Редактируем crontab
 crontab -e
 
-# Add this line (runs every 30 minutes):
+# Добавляем строку (запуск каждые 30 минут):
 */30 * * * * /home/mediabot/sync/sync_seedbox.sh >> /home/mediabot/sync/logs/cron.log 2>&1
 ```
 
-## 6. Configure Bot API Key
+## 6. Настройка API-ключа бота
 
-On your Koyeb deployment, add the environment variable:
+В деплое на Koyeb добавь переменную окружения:
 
 ```
-SYNC_API_KEY=your_secret_key_here
+SYNC_API_KEY=твой_секретный_ключ
 ```
 
-Use the same key in `config.env`.
+Используй тот же ключ в `config.env`.
 
-## Folder Structure
+## Структура папок
 
-After setup, your NAS will organize files like this:
+После настройки NAS будет организован так:
 
 ```
 /mnt/Freebox/Space/Фильмы и сериалы/
@@ -162,49 +162,49 @@ After setup, your NAS will organize files like this:
     └── Other.Show.S02E05.1080p.mkv
 ```
 
-## Troubleshooting
+## Решение проблем
 
-### Script Fails with "Permission denied"
+### Скрипт падает с «Permission denied»
 ```bash
 chmod +x ~/sync/sync_seedbox.sh
 chmod 600 ~/sync/config.env
 ```
 
-### "Host key verification failed"
-First SSH manually to accept the host key:
+### «Host key verification failed»
+Сначала подключись по SSH вручную, чтобы принять ключ хоста:
 ```bash
 ssh USERNAME@SERVERNAME.usbx.me
-# Type 'yes' to accept
+# Введи 'yes' для подтверждения
 ```
 
-### Rsync Times Out
-Check your seedbox connectivity:
+### Rsync зависает
+Проверь подключение к seedbox:
 ```bash
 ping SERVERNAME.usbx.me
 ssh USERNAME@SERVERNAME.usbx.me "ls"
 ```
 
-### Files Not Sorted Correctly
-The script detects TV shows by patterns like `S01E01`. If files are mislabeled, they'll go to Movies by default.
+### Файлы сортируются неправильно
+Скрипт определяет сериалы по паттернам типа `S01E01`. Если файлы названы иначе, они попадут в Фильмы по умолчанию.
 
-### No Notifications
-1. Check `SYNC_API_KEY` matches in both config.env and Koyeb
-2. Verify bot URL is correct
-3. Check sync.log for curl errors
+### Нет уведомлений
+1. Проверь, что `SYNC_API_KEY` совпадает в config.env и в Koyeb
+2. Проверь правильность URL бота
+3. Посмотри ошибки curl в sync.log
 
-## Maintenance
+## Обслуживание
 
-### View Logs
+### Просмотр логов
 ```bash
 tail -100 ~/sync/logs/sync.log
 ```
 
-### Clear Old Logs
+### Очистка старых логов
 ```bash
 find ~/sync/logs -name "*.log" -mtime +30 -delete
 ```
 
-### Check Disk Space
+### Проверка свободного места
 ```bash
 df -h /mnt/Freebox/Space/
 ```
