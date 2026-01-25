@@ -94,10 +94,7 @@ def quality_matches(result_quality: str | None, target_quality: str, title: str)
         return True
 
     # For 4K targets, also accept 2160p in title
-    if target_normalized == "4K" and ("2160" in title_upper or "UHD" in title_upper):
-        return True
-
-    return False
+    return bool(target_normalized == "4K" and ("2160" in title_upper or "UHD" in title_upper))
 
 
 class ReleaseChecker:
