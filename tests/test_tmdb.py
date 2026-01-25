@@ -213,6 +213,18 @@ SAMPLE_CREDITS = {
     ],
 }
 
+SAMPLE_PERSON_DETAILS = {
+    "id": 137427,
+    "name": "Denis Villeneuve",
+    "biography": "Denis Villeneuve is a French Canadian film director and writer.",
+    "birthday": "1967-10-03",
+    "deathday": None,
+    "place_of_birth": "Trois-Rivières, Quebec, Canada",
+    "profile_path": "/zdDx9Xs93UIrJFWYApYR28J8M6b.jpg",
+    "known_for_department": "Directing",
+    "popularity": 25.5,
+}
+
 SAMPLE_RECOMMENDATIONS = {
     "page": 1,
     "results": [
@@ -698,6 +710,26 @@ class TestTMDBClient:
                 assert tv.number_of_seasons == 5
                 assert tv.number_of_episodes == 62
                 assert not tv.in_production
+
+    @pytest.mark.asyncio
+    async def test_get_person(self, mock_response):
+        """Test getting person details."""
+        with patch("src.media.tmdb.settings") as mock_settings:
+            mock_settings.tmdb_api_key.get_secret_value.return_value = "test_key"
+            mock_settings.cache_ttl = 3600
+
+            async with TMDBClient() as client:
+                client._client = MagicMock(spec=httpx.AsyncClient)
+                client._client.get = AsyncMock(return_value=mock_response(SAMPLE_PERSON_DETAILS))
+
+                person = await client.get_person(137427)
+
+                assert person["id"] == 137427
+                assert person["name"] == "Denis Villeneuve"
+                assert person["known_for_department"] == "Directing"
+                assert person["birthday"] == "1967-10-03"
+                assert person["profile_path"] == "/zdDx9Xs93UIrJFWYApYR28J8M6b.jpg"
+                assert "biography" in person
 
     @pytest.mark.asyncio
     async def test_get_movie_credits(self, mock_response):
