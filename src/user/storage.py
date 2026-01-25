@@ -105,6 +105,8 @@ class Preference(BaseModel):
     # AI model settings
     claude_model: str = Field(default="claude-sonnet-4-5-20250929")
     thinking_budget: int = Field(default=0)  # 0 = disabled, >0 = max thinking tokens
+    # Search settings
+    default_search_source: str = Field(default="auto")  # "auto", "rutracker", "piratebay"
     created_at: datetime
     updated_at: datetime
 
@@ -261,6 +263,42 @@ class MemoryNote(BaseModel):
     last_accessed: datetime
     access_count: int = 0
     archived_at: datetime | None = None  # NULL = active
+
+
+class Download(BaseModel):
+    """Download history item model.
+
+    Tracks user downloads for follow-up and recommendations.
+    """
+
+    id: int
+    user_id: int
+    tmdb_id: int | None = None
+    media_type: str | None = None  # movie, tv
+    title: str
+    season: int | None = None  # For TV series
+    episode: int | None = None  # For TV series
+    quality: str | None = None
+    source: str | None = None  # rutracker, piratebay
+    magnet_hash: str | None = None
+    downloaded_at: datetime
+    followed_up: int = 0  # 0=pending, 1=sent, 2=answered
+    rating: float | None = None  # Filled after follow-up
+
+
+class PendingPush(BaseModel):
+    """Pending push notification model.
+
+    Used for throttling and prioritizing proactive notifications.
+    """
+
+    id: int
+    user_id: int
+    push_type: str  # followup, director, gem, news
+    priority: int  # 1=high, 2=medium, 3=low
+    content: dict[str, Any]  # JSON with push data
+    created_at: datetime
+    sent_at: datetime | None = None
 
 
 # Block name constants and limits
@@ -579,6 +617,7 @@ class BaseStorage(ABC):
         notification_enabled: bool | None = None,
         claude_model: str | None = None,
         thinking_budget: int | None = None,
+        default_search_source: str | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         pass
@@ -1014,6 +1053,124 @@ class BaseStorage(ABC):
         """Get notes that should be considered for archival."""
         pass
 
+    # -------------------------------------------------------------------------
+    # Downloads CRUD
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def add_download(
+        self,
+        user_id: int,
+        title: str,
+        tmdb_id: int | None = None,
+        media_type: str | None = None,
+        season: int | None = None,
+        episode: int | None = None,
+        quality: str | None = None,
+        source: str | None = None,
+        magnet_hash: str | None = None,
+    ) -> Download:
+        """Record a download event."""
+        pass
+
+    @abstractmethod
+    async def get_downloads(
+        self,
+        user_id: int,
+        limit: int = 50,
+    ) -> list[Download]:
+        """Get user's download history."""
+        pass
+
+    @abstractmethod
+    async def get_pending_followups(
+        self,
+        days: int = 3,
+    ) -> list[Download]:
+        """Get downloads that need follow-up (older than N days, not followed up)."""
+        pass
+
+    @abstractmethod
+    async def mark_followup_sent(
+        self,
+        download_id: int,
+    ) -> bool:
+        """Mark follow-up as sent."""
+        pass
+
+    @abstractmethod
+    async def mark_followup_answered(
+        self,
+        download_id: int,
+        rating: float | None = None,
+    ) -> bool:
+        """Mark follow-up as answered with optional rating."""
+        pass
+
+    @abstractmethod
+    async def get_download(
+        self,
+        download_id: int,
+    ) -> Download | None:
+        """Get a single download by ID."""
+        pass
+
+    # -------------------------------------------------------------------------
+    # Pending Pushes CRUD
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def create_pending_push(
+        self,
+        user_id: int,
+        push_type: str,
+        priority: int,
+        content: dict[str, Any],
+    ) -> PendingPush:
+        """Create a pending push notification."""
+        pass
+
+    @abstractmethod
+    async def get_pending_pushes(
+        self,
+        user_id: int | None = None,
+        push_type: str | None = None,
+    ) -> list[PendingPush]:
+        """Get pending pushes, optionally filtered by user or type."""
+        pass
+
+    @abstractmethod
+    async def get_highest_priority_push(
+        self,
+        user_id: int,
+    ) -> PendingPush | None:
+        """Get the highest priority unsent push for a user."""
+        pass
+
+    @abstractmethod
+    async def mark_push_sent(
+        self,
+        push_id: int,
+    ) -> bool:
+        """Mark a push as sent."""
+        pass
+
+    @abstractmethod
+    async def get_last_push_time(
+        self,
+        user_id: int,
+    ) -> datetime | None:
+        """Get the timestamp of last sent push for a user (for throttling)."""
+        pass
+
+    @abstractmethod
+    async def delete_old_pushes(
+        self,
+        days: int = 7,
+    ) -> int:
+        """Delete sent pushes older than N days. Returns count deleted."""
+        pass
+
 
 # =============================================================================
 # SQLite Implementation
@@ -1295,6 +1452,48 @@ class SQLiteStorage(BaseStorage):
             ALTER TABLE monitors ADD COLUMN season_number INTEGER;
             ALTER TABLE monitors ADD COLUMN episode_number INTEGER;
             ALTER TABLE monitors ADD COLUMN tracking_mode TEXT DEFAULT 'season';
+            """,
+            # Migration 18: Downloads table for tracking user downloads
+            """
+            CREATE TABLE IF NOT EXISTS downloads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tmdb_id INTEGER,
+                media_type TEXT,
+                title TEXT NOT NULL,
+                season INTEGER,
+                episode INTEGER,
+                quality TEXT,
+                source TEXT,
+                magnet_hash TEXT,
+                downloaded_at TEXT NOT NULL,
+                followed_up INTEGER DEFAULT 0,
+                rating REAL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_downloads_user_id ON downloads(user_id);
+            CREATE INDEX IF NOT EXISTS idx_downloads_followed_up ON downloads(followed_up);
+            CREATE INDEX IF NOT EXISTS idx_downloads_downloaded_at ON downloads(downloaded_at);
+            """,
+            # Migration 19: Pending pushes table for proactive notifications
+            """
+            CREATE TABLE IF NOT EXISTS pending_pushes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                push_type TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                sent_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_pushes_user_id ON pending_pushes(user_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_pushes_sent_at ON pending_pushes(sent_at);
+            CREATE INDEX IF NOT EXISTS idx_pending_pushes_priority ON pending_pushes(priority);
+            """,
+            # Migration 20: Add default_search_source to preferences
+            """
+            ALTER TABLE preferences ADD COLUMN default_search_source TEXT DEFAULT 'auto';
             """,
         ]
 
@@ -1618,6 +1817,7 @@ class SQLiteStorage(BaseStorage):
         notification_enabled: bool | None = None,
         claude_model: str | None = None,
         thinking_budget: int | None = None,
+        default_search_source: str | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         existing = await self.get_preferences(user_id)
@@ -1654,6 +1854,9 @@ class SQLiteStorage(BaseStorage):
         if thinking_budget is not None:
             updates.append("thinking_budget = ?")
             params.append(thinking_budget)
+        if default_search_source is not None:
+            updates.append("default_search_source = ?")
+            params.append(default_search_source)
 
         if not updates:
             return existing
@@ -1687,6 +1890,9 @@ class SQLiteStorage(BaseStorage):
             if "claude_model" in row.keys()
             else "claude-sonnet-4-5-20250929",
             thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
+            default_search_source=row["default_search_source"]
+            if "default_search_source" in row.keys()
+            else "auto",
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -2262,12 +2468,8 @@ class SQLiteStorage(BaseStorage):
             tracking_mode=row["tracking_mode"]
             if "tracking_mode" in row.keys() and row["tracking_mode"]
             else "season",
-            season_number=row["season_number"]
-            if "season_number" in row.keys()
-            else None,
-            episode_number=row["episode_number"]
-            if "episode_number" in row.keys()
-            else None,
+            season_number=row["season_number"] if "season_number" in row.keys() else None,
+            episode_number=row["episode_number"] if "episode_number" in row.keys() else None,
         )
 
     # -------------------------------------------------------------------------
@@ -2904,6 +3106,301 @@ class SQLiteStorage(BaseStorage):
             archived_at=datetime.fromisoformat(row["archived_at"]) if row["archived_at"] else None,
         )
 
+    # -------------------------------------------------------------------------
+    # Downloads CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def add_download(
+        self,
+        user_id: int,
+        title: str,
+        tmdb_id: int | None = None,
+        media_type: str | None = None,
+        season: int | None = None,
+        episode: int | None = None,
+        quality: str | None = None,
+        source: str | None = None,
+        magnet_hash: str | None = None,
+    ) -> Download:
+        """Record a download event."""
+        now = datetime.now(UTC).isoformat()
+
+        cursor = await self.db.execute(
+            """
+            INSERT INTO downloads (user_id, tmdb_id, media_type, title, season, episode,
+                                   quality, source, magnet_hash, downloaded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                tmdb_id,
+                media_type,
+                title,
+                season,
+                episode,
+                quality,
+                source,
+                magnet_hash,
+                now,
+            ),
+        )
+        await self.db.commit()
+
+        download_id = cursor.lastrowid
+        if download_id is None:
+            raise RuntimeError("Failed to create download record")
+
+        logger.info("download_recorded", user_id=user_id, title=title, source=source)
+
+        return Download(
+            id=download_id,
+            user_id=user_id,
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            title=title,
+            season=season,
+            episode=episode,
+            quality=quality,
+            source=source,
+            magnet_hash=magnet_hash,
+            downloaded_at=datetime.fromisoformat(now),
+            followed_up=0,
+            rating=None,
+        )
+
+    async def get_downloads(
+        self,
+        user_id: int,
+        limit: int = 50,
+    ) -> list[Download]:
+        """Get user's download history."""
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM downloads
+            WHERE user_id = ?
+            ORDER BY downloaded_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_download(row) for row in rows]
+
+    async def get_pending_followups(
+        self,
+        days: int = 3,
+    ) -> list[Download]:
+        """Get downloads that need follow-up (older than N days, not followed up)."""
+        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=days)).isoformat()
+
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM downloads
+            WHERE followed_up = 0
+                AND downloaded_at < ?
+            ORDER BY downloaded_at ASC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_download(row) for row in rows]
+
+    async def mark_followup_sent(
+        self,
+        download_id: int,
+    ) -> bool:
+        """Mark follow-up as sent."""
+        cursor = await self.db.execute(
+            "UPDATE downloads SET followed_up = 1 WHERE id = ?",
+            (download_id,),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    async def mark_followup_answered(
+        self,
+        download_id: int,
+        rating: float | None = None,
+    ) -> bool:
+        """Mark follow-up as answered with optional rating."""
+        if rating is not None:
+            cursor = await self.db.execute(
+                "UPDATE downloads SET followed_up = 2, rating = ? WHERE id = ?",
+                (rating, download_id),
+            )
+        else:
+            cursor = await self.db.execute(
+                "UPDATE downloads SET followed_up = 2 WHERE id = ?",
+                (download_id,),
+            )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    async def get_download(
+        self,
+        download_id: int,
+    ) -> Download | None:
+        """Get a single download by ID."""
+        cursor = await self.db.execute(
+            "SELECT * FROM downloads WHERE id = ?",
+            (download_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_download(row) if row else None
+
+    def _row_to_download(self, row: Any) -> Download:
+        """Convert database row to Download model."""
+        return Download(
+            id=row["id"],
+            user_id=row["user_id"],
+            tmdb_id=row["tmdb_id"],
+            media_type=row["media_type"],
+            title=row["title"],
+            season=row["season"],
+            episode=row["episode"],
+            quality=row["quality"],
+            source=row["source"],
+            magnet_hash=row["magnet_hash"],
+            downloaded_at=datetime.fromisoformat(row["downloaded_at"]),
+            followed_up=row["followed_up"],
+            rating=row["rating"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Pending Pushes CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def create_pending_push(
+        self,
+        user_id: int,
+        push_type: str,
+        priority: int,
+        content: dict[str, Any],
+    ) -> PendingPush:
+        """Create a pending push notification."""
+        now = datetime.now(UTC).isoformat()
+
+        cursor = await self.db.execute(
+            """
+            INSERT INTO pending_pushes (user_id, push_type, priority, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, push_type, priority, json.dumps(content), now),
+        )
+        await self.db.commit()
+
+        push_id = cursor.lastrowid
+        if push_id is None:
+            raise RuntimeError("Failed to create pending push")
+
+        logger.info("pending_push_created", user_id=user_id, push_type=push_type, priority=priority)
+
+        return PendingPush(
+            id=push_id,
+            user_id=user_id,
+            push_type=push_type,
+            priority=priority,
+            content=content,
+            created_at=datetime.fromisoformat(now),
+            sent_at=None,
+        )
+
+    async def get_pending_pushes(
+        self,
+        user_id: int | None = None,
+        push_type: str | None = None,
+    ) -> list[PendingPush]:
+        """Get pending pushes, optionally filtered by user or type."""
+        query = "SELECT * FROM pending_pushes WHERE sent_at IS NULL"
+        params: list[Any] = []
+
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if push_type is not None:
+            query += " AND push_type = ?"
+            params.append(push_type)
+
+        query += " ORDER BY priority ASC, created_at ASC"
+
+        cursor = await self.db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [self._row_to_pending_push(row) for row in rows]
+
+    async def get_highest_priority_push(
+        self,
+        user_id: int,
+    ) -> PendingPush | None:
+        """Get the highest priority unsent push for a user."""
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM pending_pushes
+            WHERE user_id = ? AND sent_at IS NULL
+            ORDER BY priority ASC, created_at ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_pending_push(row) if row else None
+
+    async def mark_push_sent(
+        self,
+        push_id: int,
+    ) -> bool:
+        """Mark a push as sent."""
+        now = datetime.now(UTC).isoformat()
+        cursor = await self.db.execute(
+            "UPDATE pending_pushes SET sent_at = ? WHERE id = ?",
+            (now, push_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    async def get_last_push_time(
+        self,
+        user_id: int,
+    ) -> datetime | None:
+        """Get the timestamp of last sent push for a user (for throttling)."""
+        cursor = await self.db.execute(
+            """
+            SELECT MAX(sent_at) as last_sent FROM pending_pushes
+            WHERE user_id = ? AND sent_at IS NOT NULL
+            """,
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row["last_sent"]:
+            return datetime.fromisoformat(row["last_sent"])
+        return None
+
+    async def delete_old_pushes(
+        self,
+        days: int = 7,
+    ) -> int:
+        """Delete sent pushes older than N days. Returns count deleted."""
+        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=days)).isoformat()
+        cursor = await self.db.execute(
+            "DELETE FROM pending_pushes WHERE sent_at IS NOT NULL AND sent_at < ?",
+            (cutoff,),
+        )
+        await self.db.commit()
+        return cursor.rowcount if cursor.rowcount else 0
+
+    def _row_to_pending_push(self, row: Any) -> PendingPush:
+        """Convert database row to PendingPush model."""
+        return PendingPush(
+            id=row["id"],
+            user_id=row["user_id"],
+            push_type=row["push_type"],
+            priority=row["priority"],
+            content=json.loads(row["content"])
+            if isinstance(row["content"], str)
+            else row["content"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            sent_at=datetime.fromisoformat(row["sent_at"]) if row["sent_at"] else None,
+        )
+
 
 # =============================================================================
 # PostgreSQL Implementation
@@ -3170,6 +3667,46 @@ class PostgresStorage(BaseStorage):
             ALTER TABLE monitors ADD COLUMN IF NOT EXISTS season_number INTEGER;
             ALTER TABLE monitors ADD COLUMN IF NOT EXISTS episode_number INTEGER;
             ALTER TABLE monitors ADD COLUMN IF NOT EXISTS tracking_mode TEXT DEFAULT 'season';
+            """,
+            # Migration 18: Downloads table for tracking user downloads
+            """
+            CREATE TABLE IF NOT EXISTS downloads (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tmdb_id INTEGER,
+                media_type TEXT,
+                title TEXT NOT NULL,
+                season INTEGER,
+                episode INTEGER,
+                quality TEXT,
+                source TEXT,
+                magnet_hash TEXT,
+                downloaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                followed_up INTEGER DEFAULT 0,
+                rating REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_downloads_user_id ON downloads(user_id);
+            CREATE INDEX IF NOT EXISTS idx_downloads_followed_up ON downloads(followed_up);
+            CREATE INDEX IF NOT EXISTS idx_downloads_downloaded_at ON downloads(downloaded_at);
+            """,
+            # Migration 19: Pending pushes table for proactive notifications
+            """
+            CREATE TABLE IF NOT EXISTS pending_pushes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                push_type TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                content JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                sent_at TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_pushes_user_id ON pending_pushes(user_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_pushes_sent_at ON pending_pushes(sent_at);
+            CREATE INDEX IF NOT EXISTS idx_pending_pushes_priority ON pending_pushes(priority);
+            """,
+            # Migration 20: Add default_search_source to preferences
+            """
+            ALTER TABLE preferences ADD COLUMN IF NOT EXISTS default_search_source TEXT DEFAULT 'auto';
             """,
         ]
 
@@ -3474,6 +4011,7 @@ class PostgresStorage(BaseStorage):
         notification_enabled: bool | None = None,
         claude_model: str | None = None,
         thinking_budget: int | None = None,
+        default_search_source: str | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         existing = await self.get_preferences(user_id)
@@ -3520,6 +4058,10 @@ class PostgresStorage(BaseStorage):
             updates.append(f"thinking_budget = ${param_idx}")
             params.append(thinking_budget)
             param_idx += 1
+        if default_search_source is not None:
+            updates.append(f"default_search_source = ${param_idx}")
+            params.append(default_search_source)
+            param_idx += 1
 
         if not updates:
             return existing
@@ -3561,6 +4103,9 @@ class PostgresStorage(BaseStorage):
             if "claude_model" in row.keys()
             else "claude-sonnet-4-5-20250929",
             thinking_budget=row["thinking_budget"] if "thinking_budget" in row.keys() else 0,
+            default_search_source=row["default_search_source"]
+            if "default_search_source" in row.keys()
+            else "auto",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -4654,6 +5199,274 @@ class PostgresStorage(BaseStorage):
             last_accessed=row["last_accessed"],
             access_count=row["access_count"],
             archived_at=row["archived_at"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Downloads CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def add_download(
+        self,
+        user_id: int,
+        title: str,
+        tmdb_id: int | None = None,
+        media_type: str | None = None,
+        season: int | None = None,
+        episode: int | None = None,
+        quality: str | None = None,
+        source: str | None = None,
+        magnet_hash: str | None = None,
+    ) -> Download:
+        """Record a download event."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO downloads (user_id, tmdb_id, media_type, title, season, episode,
+                                       quality, source, magnet_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING *
+                """,
+                user_id,
+                tmdb_id,
+                media_type,
+                title,
+                season,
+                episode,
+                quality,
+                source,
+                magnet_hash,
+            )
+
+        logger.info("download_recorded", user_id=user_id, title=title, source=source)
+        return self._row_to_download(row)
+
+    async def get_downloads(
+        self,
+        user_id: int,
+        limit: int = 50,
+    ) -> list[Download]:
+        """Get user's download history."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM downloads
+                WHERE user_id = $1
+                ORDER BY downloaded_at DESC
+                LIMIT $2
+                """,
+                user_id,
+                limit,
+            )
+        return [self._row_to_download(row) for row in rows]
+
+    async def get_pending_followups(
+        self,
+        days: int = 3,
+    ) -> list[Download]:
+        """Get downloads that need follow-up (older than N days, not followed up)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM downloads
+                WHERE followed_up = 0
+                    AND downloaded_at < NOW() - INTERVAL '1 day' * $1
+                ORDER BY downloaded_at ASC
+                """,
+                days,
+            )
+        return [self._row_to_download(row) for row in rows]
+
+    async def mark_followup_sent(
+        self,
+        download_id: int,
+    ) -> bool:
+        """Mark follow-up as sent."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE downloads SET followed_up = 1 WHERE id = $1",
+                download_id,
+            )
+        return result == "UPDATE 1"
+
+    async def mark_followup_answered(
+        self,
+        download_id: int,
+        rating: float | None = None,
+    ) -> bool:
+        """Mark follow-up as answered with optional rating."""
+        async with self.pool.acquire() as conn:
+            if rating is not None:
+                result = await conn.execute(
+                    "UPDATE downloads SET followed_up = 2, rating = $1 WHERE id = $2",
+                    rating,
+                    download_id,
+                )
+            else:
+                result = await conn.execute(
+                    "UPDATE downloads SET followed_up = 2 WHERE id = $1",
+                    download_id,
+                )
+        return result == "UPDATE 1"
+
+    async def get_download(
+        self,
+        download_id: int,
+    ) -> Download | None:
+        """Get a single download by ID."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM downloads WHERE id = $1",
+                download_id,
+            )
+        return self._row_to_download(row) if row else None
+
+    def _row_to_download(self, row: Any) -> Download:
+        """Convert database row to Download model."""
+        return Download(
+            id=row["id"],
+            user_id=row["user_id"],
+            tmdb_id=row["tmdb_id"],
+            media_type=row["media_type"],
+            title=row["title"],
+            season=row["season"],
+            episode=row["episode"],
+            quality=row["quality"],
+            source=row["source"],
+            magnet_hash=row["magnet_hash"],
+            downloaded_at=row["downloaded_at"],
+            followed_up=row["followed_up"],
+            rating=row["rating"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Pending Pushes CRUD Implementation
+    # -------------------------------------------------------------------------
+
+    async def create_pending_push(
+        self,
+        user_id: int,
+        push_type: str,
+        priority: int,
+        content: dict[str, Any],
+    ) -> PendingPush:
+        """Create a pending push notification."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO pending_pushes (user_id, push_type, priority, content)
+                VALUES ($1, $2, $3, $4)
+                RETURNING *
+                """,
+                user_id,
+                push_type,
+                priority,
+                json.dumps(content),
+            )
+
+        logger.info("pending_push_created", user_id=user_id, push_type=push_type, priority=priority)
+        return self._row_to_pending_push(row)
+
+    async def get_pending_pushes(
+        self,
+        user_id: int | None = None,
+        push_type: str | None = None,
+    ) -> list[PendingPush]:
+        """Get pending pushes, optionally filtered by user or type."""
+        query = "SELECT * FROM pending_pushes WHERE sent_at IS NULL"
+        params: list[Any] = []
+        param_idx = 1
+
+        if user_id is not None:
+            query += f" AND user_id = ${param_idx}"
+            params.append(user_id)
+            param_idx += 1
+        if push_type is not None:
+            query += f" AND push_type = ${param_idx}"
+            params.append(push_type)
+
+        query += " ORDER BY priority ASC, created_at ASC"
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return [self._row_to_pending_push(row) for row in rows]
+
+    async def get_highest_priority_push(
+        self,
+        user_id: int,
+    ) -> PendingPush | None:
+        """Get the highest priority unsent push for a user."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM pending_pushes
+                WHERE user_id = $1 AND sent_at IS NULL
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+                """,
+                user_id,
+            )
+        return self._row_to_pending_push(row) if row else None
+
+    async def mark_push_sent(
+        self,
+        push_id: int,
+    ) -> bool:
+        """Mark a push as sent."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE pending_pushes SET sent_at = NOW() WHERE id = $1",
+                push_id,
+            )
+        return result == "UPDATE 1"
+
+    async def get_last_push_time(
+        self,
+        user_id: int,
+    ) -> datetime | None:
+        """Get the timestamp of last sent push for a user (for throttling)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT MAX(sent_at) as last_sent FROM pending_pushes
+                WHERE user_id = $1 AND sent_at IS NOT NULL
+                """,
+                user_id,
+            )
+        if row and row["last_sent"]:
+            return row["last_sent"]
+        return None
+
+    async def delete_old_pushes(
+        self,
+        days: int = 7,
+    ) -> int:
+        """Delete sent pushes older than N days. Returns count deleted."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM pending_pushes WHERE sent_at IS NOT NULL AND sent_at < NOW() - INTERVAL '1 day' * $1",
+                days,
+            )
+        # Parse result like "DELETE 5"
+        if result and result.startswith("DELETE"):
+            parts = result.split()
+            if len(parts) == 2:
+                return int(parts[1])
+        return 0
+
+    def _row_to_pending_push(self, row: Any) -> PendingPush:
+        """Convert database row to PendingPush model."""
+        content = row["content"]
+        if isinstance(content, str):
+            content = json.loads(content)
+
+        return PendingPush(
+            id=row["id"],
+            user_id=row["user_id"],
+            push_type=row["push_type"],
+            priority=row["priority"],
+            content=content,
+            created_at=row["created_at"],
+            sent_at=row["sent_at"],
         )
 
 

@@ -59,17 +59,16 @@ class VideoQuality(str, Enum):
 
     Q_720P = "720p"
     Q_1080P = "1080p"
-    Q_4K = "4K"
-    Q_2160P = "2160p"
+    Q_4K = "4K"  # Also matches 2160p, UHD
     Q_HDR = "HDR"
 
 
 # Quality patterns for matching in titles
+# Note: 4K and 2160p are unified - both refer to the same quality
 QUALITY_PATTERNS = {
     VideoQuality.Q_720P: [r"720p", r"720i", r"HD\s*720"],
     VideoQuality.Q_1080P: [r"1080p", r"1080i", r"Full\s*HD", r"FHD"],
-    VideoQuality.Q_4K: [r"4K", r"UHD", r"Ultra\s*HD"],
-    VideoQuality.Q_2160P: [r"2160p", r"2160i"],
+    VideoQuality.Q_4K: [r"4K", r"UHD", r"Ultra\s*HD", r"2160p", r"2160i"],
     VideoQuality.Q_HDR: [r"HDR", r"HDR10", r"Dolby\s*Vision", r"DV"],
 }
 

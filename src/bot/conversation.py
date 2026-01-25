@@ -122,6 +122,65 @@ def get_cached_result(result_id: str) -> dict[str, Any] | None:
     return _search_results_cache.get(result_id)
 
 
+def _extract_magnet_hash(magnet: str) -> str | None:
+    """Extract info_hash from a magnet link.
+
+    Args:
+        magnet: Magnet link string.
+
+    Returns:
+        Info hash (40 character hex string) or None if not found.
+    """
+    import re
+
+    # Magnet format: magnet:?xt=urn:btih:<hash>&...
+    match = re.search(r"btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})", magnet)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+async def _record_download(
+    telegram_id: int,
+    result: dict[str, Any],
+    magnet: str,
+) -> None:
+    """Record a download to the database.
+
+    Args:
+        telegram_id: Telegram user ID.
+        result: Cached search result with title, source, quality, etc.
+        magnet: Magnet link used for download.
+    """
+    try:
+        async with get_storage() as storage:
+            user = await storage.get_user_by_telegram_id(telegram_id)
+            if not user:
+                logger.warning("record_download_no_user", telegram_id=telegram_id)
+                return
+
+            await storage.add_download(
+                user_id=user.id,
+                title=result.get("title", "Unknown"),
+                tmdb_id=result.get("tmdb_id"),
+                media_type=result.get("media_type"),
+                season=result.get("season"),
+                episode=result.get("episode"),
+                quality=result.get("quality"),
+                source=result.get("source"),
+                magnet_hash=_extract_magnet_hash(magnet),
+            )
+            logger.info(
+                "download_recorded",
+                telegram_id=telegram_id,
+                title=result.get("title"),
+                source=result.get("source"),
+            )
+    except Exception as e:
+        # Don't fail the download operation if recording fails
+        logger.warning("record_download_failed", error=str(e), telegram_id=telegram_id)
+
+
 # =============================================================================
 # Tool User ID Resolution Helper
 # =============================================================================
@@ -2709,6 +2768,10 @@ async def handle_magnet_callback(update: Update, _context: ContextTypes.DEFAULT_
         "magnet_sent", result_id=result_id, user_id=query.from_user.id if query.from_user else None
     )
 
+    # Record the download for follow-up
+    if query.from_user:
+        await _record_download(query.from_user.id, result, magnet)
+
 
 async def handle_torrent_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle torrent download button callback - download and send .torrent file.
@@ -2879,6 +2942,10 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
                 result_id=result_id,
                 user_id=query.from_user.id if query.from_user else None,
             )
+
+            # Record the download for follow-up
+            if query.from_user:
+                await _record_download(query.from_user.id, result, magnet)
             return
     except Exception as e:
         logger.warning("seedbox_send_failed", error=str(e))
@@ -2890,6 +2957,212 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
             f"🔗 Магнет-ссылка:\n<code>{magnet[:3500]}</code>",
             parse_mode="HTML",
         )
+
+
+async def handle_followup_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle follow-up button callbacks for download feedback.
+
+    Callback patterns:
+    - followup_yes_{download_id}: User liked the download
+    - followup_no_{download_id}: User didn't like the download
+    - followup_rate_{download_id}: User wants to rate 1-10
+
+    Args:
+        update: Telegram update object.
+        _context: Callback context (unused).
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    callback_data = query.data
+    message = query.message
+
+    # Parse callback data
+    if callback_data.startswith("followup_yes_"):
+        download_id = int(callback_data.replace("followup_yes_", ""))
+        await query.answer("Спасибо за отзыв!")
+
+        try:
+            async with get_storage() as storage:
+                download = await storage.get_download(download_id)
+                if download:
+                    # Mark as answered positively
+                    await storage.mark_followup_answered(download_id, rating=8.0)
+
+                    # Add positive fact to learnings
+                    user = await storage.get_user(download.user_id)
+                    if user:
+                        await storage.create_memory_note(
+                            user_id=user.id,
+                            content=f"Понравилось: {download.title}",
+                            source="followup",
+                            keywords=["liked", download.title.lower()[:30]],
+                            confidence=0.8,
+                        )
+
+            if message:
+                await message.edit_text(
+                    "✅ Отлично, что понравилось!\n\nЗапомню это для будущих рекомендаций.",
+                    parse_mode="HTML",
+                )
+
+            logger.info("followup_positive", download_id=download_id)
+
+        except Exception as e:
+            logger.warning("followup_yes_failed", error=str(e), download_id=download_id)
+
+    elif callback_data.startswith("followup_no_"):
+        download_id = int(callback_data.replace("followup_no_", ""))
+        await query.answer()
+
+        try:
+            async with get_storage() as storage:
+                download = await storage.get_download(download_id)
+                if download:
+                    await storage.mark_followup_answered(download_id, rating=3.0)
+
+                    # Ask if they want to block similar content
+                    if message:
+                        buttons = [
+                            [
+                                InlineKeyboardButton(
+                                    "Больше не рекомендуй такое",
+                                    callback_data=f"followup_block_{download_id}",
+                                ),
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    "Просто не понравилось",
+                                    callback_data=f"followup_dismiss_{download_id}",
+                                ),
+                            ],
+                        ]
+                        keyboard = InlineKeyboardMarkup(buttons)
+
+                        await message.edit_text(
+                            "😔 Жаль, что не понравилось.\n\n"
+                            "Хочешь, чтобы я больше не рекомендовал подобное?",
+                            reply_markup=keyboard,
+                            parse_mode="HTML",
+                        )
+
+            logger.info("followup_negative", download_id=download_id)
+
+        except Exception as e:
+            logger.warning("followup_no_failed", error=str(e), download_id=download_id)
+
+    elif callback_data.startswith("followup_rate_"):
+        download_id = int(callback_data.replace("followup_rate_", ""))
+        await query.answer()
+
+        # Show rating buttons 1-10
+        buttons = []
+        row = []
+        for i in range(1, 11):
+            row.append(
+                InlineKeyboardButton(
+                    str(i),
+                    callback_data=f"followup_rating_{download_id}_{i}",
+                )
+            )
+            if len(row) == 5:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        if message:
+            await message.edit_text(
+                "Оцени по шкале от 1 до 10:",
+                reply_markup=keyboard,
+            )
+
+    elif callback_data.startswith("followup_rating_"):
+        parts = callback_data.replace("followup_rating_", "").split("_")
+        download_id = int(parts[0])
+        rating = float(parts[1])
+
+        await query.answer(f"Оценка {int(rating)} сохранена!")
+
+        try:
+            async with get_storage() as storage:
+                download = await storage.get_download(download_id)
+                if download:
+                    await storage.mark_followup_answered(download_id, rating=rating)
+
+                    # Save rating to memory
+                    user = await storage.get_user(download.user_id)
+                    if user:
+                        sentiment = "понравилось" if rating >= 7 else "не понравилось"
+                        await storage.create_memory_note(
+                            user_id=user.id,
+                            content=f"{download.title}: оценка {int(rating)}/10 ({sentiment})",
+                            source="followup",
+                            keywords=["rating", download.title.lower()[:30]],
+                            confidence=0.9,
+                        )
+
+            if message:
+                emoji = (
+                    "🌟" if rating >= 8 else "👍" if rating >= 6 else "🤔" if rating >= 4 else "👎"
+                )
+                await message.edit_text(
+                    f"{emoji} Оценка {int(rating)}/10 сохранена!\n\n"
+                    f"Учту это для будущих рекомендаций.",
+                    parse_mode="HTML",
+                )
+
+            logger.info("followup_rated", download_id=download_id, rating=rating)
+
+        except Exception as e:
+            logger.warning("followup_rating_failed", error=str(e), download_id=download_id)
+
+    elif callback_data.startswith("followup_block_"):
+        download_id = int(callback_data.replace("followup_block_", ""))
+        await query.answer("Запомнил!")
+
+        try:
+            async with get_storage() as storage:
+                download = await storage.get_download(download_id)
+                if download:
+                    # Add to blocklist (title for now, could be extended)
+                    user = await storage.get_user(download.user_id)
+                    if user:
+                        await storage.add_to_blocklist(
+                            user_id=user.id,
+                            block_type="title",
+                            block_value=download.title,
+                            block_level="dont_recommend",
+                            notes="Didn't like it (from follow-up)",
+                        )
+
+            if message:
+                await message.edit_text(
+                    "🚫 Запомнил! Больше не буду рекомендовать подобное.",
+                    parse_mode="HTML",
+                )
+
+            logger.info("followup_blocked", download_id=download_id)
+
+        except Exception as e:
+            logger.warning("followup_block_failed", error=str(e), download_id=download_id)
+
+    elif callback_data.startswith("followup_dismiss_"):
+        download_id = int(callback_data.replace("followup_dismiss_", ""))
+        await query.answer("Понял!")
+
+        if message:
+            await message.edit_text(
+                "👌 Понял, просто не понравилось. Буду иметь в виду!",
+                parse_mode="HTML",
+            )
+
+        logger.info("followup_dismissed", download_id=download_id)
 
 
 async def handle_monitor_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:

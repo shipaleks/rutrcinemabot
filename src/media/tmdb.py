@@ -1073,6 +1073,149 @@ class TMDBClient:
         raise ValueError(f"Invalid media type for recommendations: {media_type}")
 
     # =========================================================================
+    # Person/Director Methods
+    # =========================================================================
+
+    async def search_person(
+        self,
+        query: str,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Search for a person by name.
+
+        Args:
+            query: Person name to search for
+            page: Page number (1-based)
+
+        Returns:
+            List of person results with id, name, known_for_department, etc.
+        """
+        data = await self._request(
+            "/search/person",
+            params={
+                "query": query,
+                "page": page,
+            },
+        )
+
+        results = []
+        for item in data.get("results", []):
+            results.append(
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "known_for_department": item.get("known_for_department"),
+                    "profile_path": item.get("profile_path"),
+                    "popularity": item.get("popularity", 0),
+                }
+            )
+
+        logger.info("tmdb_search_person", query=query, results_count=len(results))
+        return results
+
+    async def get_person_movie_credits(
+        self,
+        person_id: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Get movie credits for a person (both cast and crew).
+
+        Args:
+            person_id: TMDB person ID
+
+        Returns:
+            Dict with 'cast' and 'crew' lists containing movie information
+        """
+        data = await self._request(f"/person/{person_id}/movie_credits")
+
+        cast = []
+        for item in data.get("cast", []):
+            cast.append(
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title"),
+                    "release_date": item.get("release_date"),
+                    "character": item.get("character"),
+                    "popularity": item.get("popularity", 0),
+                    "vote_average": item.get("vote_average", 0),
+                }
+            )
+
+        crew = []
+        for item in data.get("crew", []):
+            crew.append(
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title"),
+                    "release_date": item.get("release_date"),
+                    "job": item.get("job"),
+                    "department": item.get("department"),
+                    "popularity": item.get("popularity", 0),
+                    "vote_average": item.get("vote_average", 0),
+                }
+            )
+
+        logger.info(
+            "tmdb_get_person_movie_credits",
+            person_id=person_id,
+            cast_count=len(cast),
+            crew_count=len(crew),
+        )
+        return {"cast": cast, "crew": crew}
+
+    async def get_person_upcoming_movies(
+        self,
+        person_id: int,
+        role: str = "Director",
+    ) -> list[dict[str, Any]]:
+        """Get upcoming movies for a person in a specific role.
+
+        Filters movies to only include those with release dates in the future.
+
+        Args:
+            person_id: TMDB person ID
+            role: Role to filter by (e.g., "Director", "Writer")
+
+        Returns:
+            List of upcoming movies with id, title, release_date, etc.
+        """
+        from datetime import date
+
+        credits = await self.get_person_movie_credits(person_id)
+        today = date.today().isoformat()
+
+        upcoming = []
+        for movie in credits.get("crew", []):
+            # Filter by role
+            if movie.get("job") != role:
+                continue
+
+            # Filter for future releases
+            release_date = movie.get("release_date")
+            if not release_date or release_date <= today:
+                continue
+
+            upcoming.append(
+                {
+                    "id": movie.get("id"),
+                    "title": movie.get("title"),
+                    "release_date": release_date,
+                    "job": movie.get("job"),
+                    "popularity": movie.get("popularity", 0),
+                }
+            )
+
+        # Sort by release date
+        upcoming.sort(key=lambda x: x.get("release_date", "9999"))
+
+        logger.info(
+            "tmdb_get_person_upcoming_movies",
+            person_id=person_id,
+            role=role,
+            upcoming_count=len(upcoming),
+        )
+        return upcoming
+
+    # =========================================================================
     # Cache Management
     # =========================================================================
 

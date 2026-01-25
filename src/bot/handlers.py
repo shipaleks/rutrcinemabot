@@ -106,7 +106,11 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /profile command.
 
-    Shows user's markdown profile.
+    Shows user's extended profile including:
+    - Core memory profile
+    - Recent downloads (last 10)
+    - Active monitors
+    - Favorite directors (from memory notes)
 
     Args:
         update: Telegram update object
@@ -119,21 +123,91 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         async with get_storage() as storage:
             db_user = await storage.get_user_by_telegram_id(user.id)
-            if db_user:
-                profile = await storage.get_profile(db_user.id)
-                if profile and profile.profile_md:
-                    # Truncate if too long for Telegram
-                    profile_text = profile.profile_md
-                    if len(profile_text) > 4000:
-                        profile_text = profile_text[:4000] + "\n\n_...профиль сокращён_"
+            if not db_user:
+                await update.message.reply_text(
+                    "Профиль не найден. Используйте /start для настройки."
+                )
+                return
 
-                    await update.message.reply_text(
-                        f"**Ваш профиль:**\n\n```\n{profile_text}\n```",
-                        parse_mode="Markdown",
-                    )
-                    return
+            sections = []
 
-        await update.message.reply_text("Профиль не найден. Используйте /start для настройки.")
+            # Section 1: Core memory profile summary
+            try:
+                blocks = await storage.get_all_core_memory_blocks(db_user.id)
+                if blocks:
+                    identity = next((b for b in blocks if b.block_name == "identity"), None)
+                    preferences = next((b for b in blocks if b.block_name == "preferences"), None)
+
+                    if identity and identity.content:
+                        sections.append(f"👤 **Профиль:**\n{identity.content[:300]}")
+                    if preferences and preferences.content:
+                        sections.append(f"⚙️ **Предпочтения:**\n{preferences.content[:300]}")
+            except Exception:
+                pass
+
+            # Section 2: Recent downloads
+            try:
+                downloads = await storage.get_downloads(db_user.id, limit=10)
+                if downloads:
+                    download_lines = []
+                    for d in downloads:
+                        date_str = d.downloaded_at.strftime("%d.%m")
+                        quality = f" ({d.quality})" if d.quality else ""
+                        rating = f" ⭐{d.rating:.0f}" if d.rating else ""
+                        download_lines.append(f"• {d.title[:40]}{quality}{rating} — {date_str}")
+                    sections.append("📥 **Последние скачивания:**\n" + "\n".join(download_lines))
+            except Exception:
+                pass
+
+            # Section 3: Active monitors
+            try:
+                monitors = await storage.get_monitors(db_user.id, status="active")
+                if monitors:
+                    monitor_lines = []
+                    for m in monitors[:10]:
+                        quality = f" {m.quality}" if m.quality else ""
+                        if m.tracking_mode == "episode" and m.season_number and m.episode_number:
+                            ep_info = f" S{m.season_number:02d}E{m.episode_number:02d}"
+                        else:
+                            ep_info = ""
+                        monitor_lines.append(f"• {m.title[:35]}{ep_info}{quality}")
+                    sections.append("🔔 **Активные мониторы:**\n" + "\n".join(monitor_lines))
+            except Exception:
+                pass
+
+            # Section 4: Favorite directors (from memory notes)
+            try:
+                notes = await storage.search_memory_notes(db_user.id, "director", limit=10)
+                notes_ru = await storage.search_memory_notes(db_user.id, "режиссёр", limit=10)
+                all_notes = notes + notes_ru
+
+                if all_notes:
+                    # Extract director names from notes
+                    import re
+
+                    directors = set()
+                    for note in all_notes:
+                        names = re.findall(r"[A-ZА-Я][a-zа-яё]+ [A-ZА-Я][a-zа-яё]+", note.content)
+                        directors.update(names[:2])
+
+                    if directors:
+                        sections.append(
+                            "🎬 **Любимые режиссёры:**\n• " + "\n• ".join(list(directors)[:5])
+                        )
+            except Exception:
+                pass
+
+            # Build response
+            if sections:
+                response = "\n\n".join(sections)
+                if len(response) > 4000:
+                    response = response[:4000] + "\n\n_...сокращено_"
+                await update.message.reply_text(response, parse_mode="Markdown")
+            else:
+                await update.message.reply_text(
+                    "Профиль пока пустой. Поговори со мной о фильмах, и я запомню твои предпочтения!"
+                )
+
     except Exception as e:
         logger.exception("profile_handler_failed", user_id=user.id, error=str(e))
         await update.message.reply_text("Не удалось загрузить профиль. Попробуйте позже.")
@@ -218,9 +292,7 @@ async def reset_profile_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     except Exception as e:
         logger.exception("reset_profile_failed", user_id=user.id, error=str(e))
-        await update.message.reply_text(
-            "Не удалось очистить профиль. Попробуйте позже."
-        )
+        await update.message.reply_text("Не удалось очистить профиль. Попробуйте позже.")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

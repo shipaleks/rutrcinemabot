@@ -36,6 +36,70 @@ class FoundRelease:
     source: str  # "rutracker" or "piratebay"
 
 
+def normalize_quality(quality: str | None) -> str | None:
+    """Normalize quality string for comparison.
+
+    Maps 2160p/UHD to 4K for unified matching.
+
+    Args:
+        quality: Quality string to normalize
+
+    Returns:
+        Normalized quality string or None
+    """
+    if not quality:
+        return None
+
+    quality_upper = quality.upper()
+
+    # Unify 4K/2160p variants
+    if any(q in quality_upper for q in ["2160", "UHD", "4K", "ULTRA HD"]):
+        return "4K"
+
+    # Standard mappings
+    if "1080" in quality_upper:
+        return "1080p"
+    if "720" in quality_upper:
+        return "720p"
+    if "HDR" in quality_upper:
+        return "HDR"
+
+    return quality
+
+
+def quality_matches(result_quality: str | None, target_quality: str, title: str) -> bool:
+    """Check if result quality matches target quality.
+
+    Args:
+        result_quality: Quality detected from the result
+        target_quality: Quality the user is looking for
+        title: Torrent title (for fallback matching)
+
+    Returns:
+        True if quality matches
+    """
+    target_normalized = normalize_quality(target_quality)
+    result_normalized = normalize_quality(result_quality)
+
+    # Direct match after normalization
+    if result_normalized and result_normalized == target_normalized:
+        return True
+
+    # Also check if target quality string appears in title
+    # (handles cases where quality detection failed)
+    title_upper = title.upper()
+    target_upper = target_quality.upper()
+
+    if target_upper in title_upper:
+        return True
+
+    # For 4K targets, also accept 2160p in title
+    if target_normalized == "4K" and ("2160" in title_upper or "UHD" in title_upper):
+        return True
+
+    return False
+
+
 class ReleaseChecker:
     """Checks torrent trackers for monitored releases.
 
@@ -247,8 +311,7 @@ class ReleaseChecker:
                 valid_results = [
                     r
                     for r in results
-                    if r.seeds >= self._min_seeds
-                    and (not r.quality or r.quality == quality or quality in r.title)
+                    if r.seeds >= self._min_seeds and quality_matches(r.quality, quality, r.title)
                 ]
 
                 if not valid_results:
@@ -302,8 +365,12 @@ class ReleaseChecker:
                 if not results:
                     return None
 
-                # Filter for best match
-                valid_results = [r for r in results if r.seeds >= self._min_seeds]
+                # Filter for best match by seeds and quality
+                valid_results = [
+                    r
+                    for r in results
+                    if r.seeds >= self._min_seeds and quality_matches(r.quality, quality, r.title)
+                ]
 
                 if not valid_results:
                     return None

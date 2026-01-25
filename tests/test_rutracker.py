@@ -185,8 +185,8 @@ class TestDetectQuality:
         assert detect_quality("Movie UHD HDR") == "4K"
 
     def test_detect_2160p(self):
-        """Test 2160p quality detection."""
-        assert detect_quality("Movie 2160p Remux") == "2160p"
+        """Test 2160p quality detection - now unified with 4K."""
+        assert detect_quality("Movie 2160p Remux") == "4K"  # 2160p is unified with 4K
 
     def test_detect_hdr(self):
         """Test HDR quality detection."""
@@ -808,8 +808,7 @@ class TestEnums:
         """Test VideoQuality enum values."""
         assert VideoQuality.Q_720P.value == "720p"
         assert VideoQuality.Q_1080P.value == "1080p"
-        assert VideoQuality.Q_4K.value == "4K"
-        assert VideoQuality.Q_2160P.value == "2160p"
+        assert VideoQuality.Q_4K.value == "4K"  # Also matches 2160p, UHD
         assert VideoQuality.Q_HDR.value == "HDR"
 
     def test_content_category_values(self):

@@ -292,6 +292,16 @@ def get_system_prompt(
         if genres and isinstance(genres, list) and len(genres) > 0:
             context_parts.append(f"- Любимые жанры: **{', '.join(genres)}**")
 
+        search_source = user_preferences.get("default_search_source")
+        if search_source and search_source != "auto":
+            source_map = {
+                "rutracker": "Rutracker (предпочитаем для русского контента)",
+                "piratebay": "PirateBay (предпочитаем для зарубежного контента)",
+            }
+            context_parts.append(
+                f"- Источник поиска: **{source_map.get(search_source, search_source)}**"
+            )
+
     # Add blocklist warning if items exist
     if blocklist_items and len(blocklist_items) > 0:
         context_parts.append("\n\n## ⚠️ BLOCKLIST — НЕ РЕКОМЕНДОВАТЬ:")

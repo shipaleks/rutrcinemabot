@@ -41,6 +41,19 @@ SCHEDULER_RUN_INTERVAL_HOURS = 2
 MEMORY_ARCHIVAL_INTERVAL_HOURS = 24  # Run once daily
 LEARNING_DETECTION_INTERVAL_HOURS = 12  # Run twice daily
 
+# Follow-up intervals
+FOLLOWUP_CHECK_INTERVAL_HOURS = 6  # Check for pending follow-ups 4 times daily
+FOLLOWUP_DAYS_THRESHOLD = 3  # Days after download before sending follow-up
+
+# Proactive push intervals
+DIRECTOR_RELEASES_CHECK_HOURS = 168  # Check once per week (7 * 24)
+HIDDEN_GEM_CHECK_HOURS = 168  # Send hidden gem once per week
+
+# Push delivery settings
+PUSH_DELIVERY_CHECK_HOURS = 4  # Check for pending pushes every 4 hours
+PUSH_MIN_HOUR = 18  # Earliest hour to send pushes (evening)
+PUSH_MAX_HOUR = 21  # Latest hour to send pushes
+
 
 def get_check_interval_hours(release_date: datetime | None) -> int:
     """Calculate check interval based on expected release date.
@@ -172,6 +185,46 @@ class MonitoringScheduler:
             trigger=IntervalTrigger(hours=LEARNING_DETECTION_INTERVAL_HOURS),
             id="learning_detection",
             name="Learning Detection",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add download follow-up job - check every 6 hours
+        self._scheduler.add_job(
+            self._check_pending_followups,
+            trigger=IntervalTrigger(hours=FOLLOWUP_CHECK_INTERVAL_HOURS),
+            id="download_followups",
+            name="Download Follow-ups",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add director releases check - once per week
+        self._scheduler.add_job(
+            self._check_director_releases,
+            trigger=IntervalTrigger(hours=DIRECTOR_RELEASES_CHECK_HOURS),
+            id="director_releases",
+            name="Director Releases",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add hidden gem recommendations - once per week
+        self._scheduler.add_job(
+            self._generate_hidden_gems,
+            trigger=IntervalTrigger(hours=HIDDEN_GEM_CHECK_HOURS),
+            id="hidden_gems",
+            name="Hidden Gem Recommendations",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add push delivery job - check every 4 hours, sends in evening window
+        self._scheduler.add_job(
+            self._deliver_pending_pushes,
+            trigger=IntervalTrigger(hours=PUSH_DELIVERY_CHECK_HOURS),
+            id="push_delivery",
+            name="Push Notification Delivery",
             replace_existing=True,
             max_instances=1,
         )
@@ -604,6 +657,498 @@ class MonitoringScheduler:
                 telegram_id=telegram_id,
                 error=str(e),
             )
+
+    async def _check_pending_followups(self) -> None:
+        """Check for downloads that need follow-up and send notifications.
+
+        Sends "Did you like it?" messages for downloads older than FOLLOWUP_DAYS_THRESHOLD
+        that haven't been followed up yet.
+        """
+        logger.info("followup_check_started")
+
+        try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            async with get_storage() as storage:
+                # Get downloads that need follow-up
+                pending = await storage.get_pending_followups(days=FOLLOWUP_DAYS_THRESHOLD)
+
+                if not pending:
+                    logger.debug("followup_check_no_pending")
+                    return
+
+                logger.info("followup_pending_found", count=len(pending))
+
+                for download in pending:
+                    try:
+                        # Get user's telegram_id
+                        user = await storage.get_user(download.user_id)
+                        if not user:
+                            continue
+
+                        # Format the follow-up message
+                        title = download.title
+                        if download.season and download.episode:
+                            title += f" S{download.season:02d}E{download.episode:02d}"
+                        elif download.season:
+                            title += f" S{download.season:02d}"
+
+                        message = f"🎬 Ты скачал **{title}** несколько дней назад.\n\nПонравилось?"
+
+                        # Create inline keyboard
+                        buttons = [
+                            [
+                                InlineKeyboardButton(
+                                    "👍 Да",
+                                    callback_data=f"followup_yes_{download.id}",
+                                ),
+                                InlineKeyboardButton(
+                                    "👎 Нет",
+                                    callback_data=f"followup_no_{download.id}",
+                                ),
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    "📝 Оценить 1-10",
+                                    callback_data=f"followup_rate_{download.id}",
+                                ),
+                            ],
+                        ]
+                        keyboard = InlineKeyboardMarkup(buttons)
+
+                        # Send the message
+                        await self._bot.send_message(
+                            chat_id=user.telegram_id,
+                            text=message,
+                            parse_mode="Markdown",
+                            reply_markup=keyboard,
+                        )
+
+                        # Mark as sent
+                        await storage.mark_followup_sent(download.id)
+
+                        logger.info(
+                            "followup_sent",
+                            user_id=user.id,
+                            download_id=download.id,
+                            title=download.title,
+                        )
+
+                    except Exception as e:
+                        logger.warning(
+                            "followup_send_failed",
+                            download_id=download.id,
+                            error=str(e),
+                        )
+
+                logger.info("followup_check_completed", sent=len(pending))
+
+        except Exception as e:
+            logger.exception("followup_check_failed", error=str(e))
+
+    async def _check_director_releases(self) -> None:
+        """Check for new movies from favorite directors.
+
+        Analyzes memory_notes for favorite directors and checks TMDB
+        for upcoming releases.
+        """
+        logger.info("director_releases_check_started")
+
+        try:
+            from src.media.tmdb import TMDBClient
+
+            async with get_storage() as storage:
+                users = await storage.get_all_users(limit=1000)
+
+                for user in users:
+                    try:
+                        # Get memory notes about directors
+                        notes = await storage.search_memory_notes(
+                            user_id=user.id,
+                            query="director",
+                            limit=20,
+                        )
+
+                        # Also check for "режиссёр" in Russian
+                        notes_ru = await storage.search_memory_notes(
+                            user_id=user.id,
+                            query="режиссёр",
+                            limit=20,
+                        )
+                        notes.extend(notes_ru)
+
+                        if not notes:
+                            continue
+
+                        # Extract director names from notes
+                        director_names = set()
+                        for note in notes:
+                            # Simple extraction - look for patterns like "director: X" or "режиссёр X"
+                            content = note.content.lower()
+                            if "director" in content or "режиссёр" in content:
+                                # Extract potential names (capitalized words)
+                                import re
+
+                                names = re.findall(
+                                    r"[A-ZА-Я][a-zа-яё]+ [A-ZА-Я][a-zа-яё]+", note.content
+                                )
+                                director_names.update(names[:3])  # Limit per note
+
+                        if not director_names:
+                            continue
+
+                        # Check each director for upcoming releases
+                        async with TMDBClient() as tmdb:
+                            for director_name in list(director_names)[:5]:  # Limit to 5 directors
+                                try:
+                                    # Search for the director
+                                    persons = await tmdb.search_person(director_name)
+                                    if not persons:
+                                        continue
+
+                                    # Get the most likely director
+                                    director = None
+                                    for p in persons:
+                                        if p.get("known_for_department") == "Directing":
+                                            director = p
+                                            break
+                                    if not director:
+                                        director = persons[0]
+
+                                    # Get upcoming movies
+                                    upcoming = await tmdb.get_person_upcoming_movies(
+                                        director["id"],
+                                        role="Director",
+                                    )
+
+                                    if upcoming:
+                                        # Create pending push for the first upcoming movie
+                                        movie = upcoming[0]
+                                        await storage.create_pending_push(
+                                            user_id=user.id,
+                                            push_type="director",
+                                            priority=2,  # Medium priority
+                                            content={
+                                                "director_name": director["name"],
+                                                "director_id": director["id"],
+                                                "movie_title": movie["title"],
+                                                "movie_id": movie["id"],
+                                                "release_date": movie["release_date"],
+                                            },
+                                        )
+
+                                        logger.info(
+                                            "director_release_found",
+                                            user_id=user.id,
+                                            director=director["name"],
+                                            movie=movie["title"],
+                                        )
+
+                                except Exception as e:
+                                    logger.warning(
+                                        "director_check_failed",
+                                        director=director_name,
+                                        error=str(e),
+                                    )
+
+                    except Exception as e:
+                        logger.warning(
+                            "director_releases_user_failed",
+                            user_id=user.id,
+                            error=str(e),
+                        )
+
+            logger.info("director_releases_check_completed")
+
+        except Exception as e:
+            logger.exception("director_releases_check_failed", error=str(e))
+
+    async def _generate_hidden_gems(self) -> None:
+        """Generate personalized hidden gem recommendations using Claude.
+
+        Uses the user's profile and watch history to suggest non-obvious films.
+        """
+        logger.info("hidden_gems_generation_started")
+
+        try:
+            from src.user.memory import CoreMemoryManager
+
+            async with get_storage() as storage:
+                users = await storage.get_all_users(limit=1000)
+
+                for user in users:
+                    try:
+                        # Check if user wants notifications
+                        prefs = await storage.get_preferences(user.id)
+                        if prefs and not prefs.notification_enabled:
+                            continue
+
+                        # Get user's core memory for profile context
+                        memory_manager = CoreMemoryManager(storage)
+                        profile_blocks = await memory_manager.get_all_blocks(user.id)
+
+                        # Build profile context
+                        profile_context = ""
+                        for block in profile_blocks:
+                            if block.content:
+                                profile_context += f"\n{block.block_name}: {block.content}"
+
+                        if not profile_context.strip():
+                            continue  # No profile data to work with
+
+                        # Get recent watch history
+                        watched = await storage.get_watched(user.id, limit=20)
+                        watched_titles = [w.title for w in watched]
+
+                        # Generate recommendation using Claude
+                        prompt = f"""Based on this user's profile, suggest ONE hidden gem film.
+
+Profile:
+{profile_context}
+
+Recently watched: {", ".join(watched_titles[:10]) if watched_titles else "No data"}
+
+Requirements:
+- NOT a blockbuster (no Marvel, Star Wars, etc.)
+- NOT in IMDb Top 250
+- Matches user's taste based on profile
+- Released before 2020 (so it's discoverable now)
+- Must be available for streaming/download
+
+Return ONLY a JSON object with:
+{{"title": "Film Title", "year": 1999, "reason": "Why this matches their taste (1 sentence)", "tmdb_id": 12345}}
+
+If you can't find a good match, return {{"error": "No suitable film found"}}"""
+
+                        # Use Anthropic client directly for simple generation
+                        import anthropic
+
+                        client = anthropic.AsyncAnthropic(
+                            api_key=settings.anthropic_api_key.get_secret_value()
+                        )
+                        message = await client.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            max_tokens=500,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+
+                        response = ""
+                        for block in message.content:
+                            if hasattr(block, "text"):
+                                response += block.text
+
+                        # Parse the response
+                        import json
+                        import re
+
+                        # Extract JSON from response
+                        json_match = re.search(r"\{[^{}]+\}", response)
+                        if not json_match:
+                            continue
+
+                        try:
+                            recommendation = json.loads(json_match.group())
+                        except json.JSONDecodeError:
+                            continue
+
+                        if "error" in recommendation:
+                            continue
+
+                        # Create pending push
+                        await storage.create_pending_push(
+                            user_id=user.id,
+                            push_type="gem",
+                            priority=3,  # Low priority (after followups and director releases)
+                            content={
+                                "title": recommendation.get("title"),
+                                "year": recommendation.get("year"),
+                                "reason": recommendation.get("reason"),
+                                "tmdb_id": recommendation.get("tmdb_id"),
+                            },
+                        )
+
+                        logger.info(
+                            "hidden_gem_generated",
+                            user_id=user.id,
+                            title=recommendation.get("title"),
+                        )
+
+                    except Exception as e:
+                        logger.warning(
+                            "hidden_gem_user_failed",
+                            user_id=user.id,
+                            error=str(e),
+                        )
+
+            logger.info("hidden_gems_generation_completed")
+
+        except Exception as e:
+            logger.exception("hidden_gems_generation_failed", error=str(e))
+
+    async def _deliver_pending_pushes(self) -> None:
+        """Deliver pending push notifications with throttling.
+
+        Only delivers pushes:
+        - Between PUSH_MIN_HOUR and PUSH_MAX_HOUR (evening window)
+        - Maximum 1 push per user per day
+        - Highest priority push first
+        """
+        logger.info("push_delivery_started")
+
+        # Check if we're in the delivery time window
+        current_hour = datetime.now(UTC).hour
+        if not (PUSH_MIN_HOUR <= current_hour <= PUSH_MAX_HOUR):
+            logger.debug("push_delivery_outside_window", hour=current_hour)
+            return
+
+        try:
+            async with get_storage() as storage:
+                users = await storage.get_all_users(limit=1000)
+                delivered_count = 0
+
+                for user in users:
+                    try:
+                        # Check if user already received a push today
+                        last_push = await storage.get_last_push_time(user.id)
+                        if last_push:
+                            # Ensure last_push has timezone info
+                            if last_push.tzinfo is None:
+                                last_push = last_push.replace(tzinfo=UTC)
+
+                            now = datetime.now(UTC)
+                            if (now - last_push).total_seconds() < 86400:  # 24 hours
+                                continue
+
+                        # Get highest priority pending push
+                        push = await storage.get_highest_priority_push(user.id)
+                        if not push:
+                            continue
+
+                        # Format and send the push
+                        message, keyboard = self._format_push_message(push)
+
+                        await self._bot.send_message(
+                            chat_id=user.telegram_id,
+                            text=message,
+                            parse_mode="Markdown",
+                            reply_markup=keyboard,
+                        )
+
+                        # Mark as sent
+                        await storage.mark_push_sent(push.id)
+                        delivered_count += 1
+
+                        logger.info(
+                            "push_delivered",
+                            user_id=user.id,
+                            push_type=push.push_type,
+                        )
+
+                    except Exception as e:
+                        logger.warning(
+                            "push_delivery_user_failed",
+                            user_id=user.id,
+                            error=str(e),
+                        )
+
+                # Cleanup old pushes
+                deleted = await storage.delete_old_pushes(days=7)
+                if deleted > 0:
+                    logger.info("old_pushes_deleted", count=deleted)
+
+                logger.info("push_delivery_completed", delivered=delivered_count)
+
+        except Exception as e:
+            logger.exception("push_delivery_failed", error=str(e))
+
+    def _format_push_message(
+        self,
+        push: Any,
+    ) -> tuple[str, Any]:
+        """Format a push notification message based on type.
+
+        Args:
+            push: PendingPush object
+
+        Returns:
+            Tuple of (message_text, keyboard)
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        content = push.content
+        buttons = []
+
+        if push.push_type == "followup":
+            title = content.get("title", "")
+            message = f"🎬 Ты скачал **{title}** несколько дней назад.\n\nПонравилось?"
+            buttons = [
+                [
+                    InlineKeyboardButton("👍 Да", callback_data=f"followup_yes_{push.id}"),
+                    InlineKeyboardButton("👎 Нет", callback_data=f"followup_no_{push.id}"),
+                ],
+            ]
+
+        elif push.push_type == "director":
+            director = content.get("director_name", "")
+            movie = content.get("movie_title", "")
+            release_date = content.get("release_date", "")
+            message = (
+                f"🎬 Твой любимый режиссёр **{director}** снимает новый фильм!\n\n"
+                f"📽️ **{movie}**\n"
+                f"📅 Дата выхода: {release_date}"
+            )
+            movie_id = content.get("movie_id")
+            if movie_id:
+                buttons = [
+                    [
+                        InlineKeyboardButton(
+                            "📋 Создать монитор",
+                            callback_data=f"push_monitor_{movie_id}",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🚫 Не интересно", callback_data=f"push_dismiss_{push.id}"
+                        ),
+                    ],
+                ]
+
+        elif push.push_type == "gem":
+            title = content.get("title", "")
+            year = content.get("year", "")
+            reason = content.get("reason", "")
+            message = f"💎 **Hidden Gem для тебя!**\n\n📽️ **{title}** ({year})\n\n_{reason}_"
+            buttons = [
+                [
+                    InlineKeyboardButton("🔍 Найти", callback_data=f"push_search_{title[:30]}"),
+                    InlineKeyboardButton(
+                        "📋 В watchlist", callback_data=f"push_watchlist_{push.id}"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🚫 Не интересно", callback_data=f"push_dismiss_{push.id}"
+                    ),
+                ],
+            ]
+
+        elif push.push_type == "news":
+            headline = content.get("headline", "")
+            source = content.get("source", "")
+            message = f"📰 **Новость из мира кино**\n\n{headline}\n\n_Источник: {source}_"
+            buttons = [
+                [
+                    InlineKeyboardButton(
+                        "🚫 Не интересно", callback_data=f"push_dismiss_{push.id}"
+                    ),
+                ],
+            ]
+
+        else:
+            message = f"📢 {content.get('message', 'Notification')}"
+
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+        return message, keyboard
 
     async def _auto_download(self, release: FoundRelease) -> None:
         """Automatically send release to seedbox.

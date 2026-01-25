@@ -24,6 +24,7 @@ from telegram.ext import (
 
 from src.bot.conversation import (
     handle_download_callback,
+    handle_followup_callback,
     handle_magnet_callback,
     handle_message,
     handle_monitor_callback,
@@ -103,6 +104,9 @@ def create_application() -> Application:
     application.add_handler(CallbackQueryHandler(handle_magnet_callback, pattern="^dl_magnet_"))
     application.add_handler(CallbackQueryHandler(handle_torrent_callback, pattern="^dl_torrent_"))
     application.add_handler(CallbackQueryHandler(handle_seedbox_callback, pattern="^dl_seedbox_"))
+
+    # Register follow-up handlers for download feedback
+    application.add_handler(CallbackQueryHandler(handle_followup_callback, pattern="^followup_"))
 
     # Register message handler for natural language conversation
     # This should be last to avoid intercepting commands
