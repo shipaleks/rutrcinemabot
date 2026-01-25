@@ -689,6 +689,80 @@ LETTERBOXD_SYNC_TOOL = {
 
 
 # =============================================================================
+# Proactive Features Tools
+# =============================================================================
+
+GET_INDUSTRY_NEWS_TOOL = {
+    "name": "get_industry_news",
+    "description": (
+        "Поиск актуальных новостей киноиндустрии по ключевым словам. "
+        "Сканирует RSS-ленты Deadline, Variety, IndieWire, Hollywood Reporter. "
+        "Используй для ответа на вопросы про новости о режиссёрах, актёрах, студиях."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Ключевые слова для поиска (имена режиссёров, актёров, названия фильмов)",
+            },
+            "hours": {
+                "type": "integer",
+                "description": "За сколько часов искать новости (по умолчанию 72)",
+                "default": 72,
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Максимум результатов (по умолчанию 5)",
+                "default": 5,
+            },
+        },
+        "required": ["keywords"],
+    },
+}
+
+GET_HIDDEN_GEM_TOOL = {
+    "name": "get_hidden_gem",
+    "description": (
+        "Генерирует персонализированную рекомендацию 'скрытой жемчужины' — "
+        "малоизвестного фильма, который идеально подойдёт пользователю. "
+        "Анализирует профиль и историю просмотров. "
+        "Критерии: не блокбастер, не топ-250 IMDb, соответствует вкусам. "
+        "Используй когда пользователь просит что-то необычное, неизвестное, не мейнстрим."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "integer",
+                "description": "Internal user ID",
+            },
+        },
+        "required": ["user_id"],
+    },
+}
+
+GET_DIRECTOR_UPCOMING_TOOL = {
+    "name": "get_director_upcoming",
+    "description": (
+        "Получение списка предстоящих фильмов режиссёра. "
+        "Показывает анонсированные проекты в производстве или пост-продакшене."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "director_name": {
+                "type": "string",
+                "description": "Имя режиссёра для поиска",
+            },
+        },
+        "required": ["director_name"],
+    },
+}
+
+
+# =============================================================================
 # Memory System Tools (MemGPT-style)
 # =============================================================================
 
@@ -883,6 +957,10 @@ ALL_TOOLS: list[dict[str, Any]] = [
     GET_CREW_STATS_TOOL,
     # External service sync
     LETTERBOXD_SYNC_TOOL,
+    # Proactive features
+    GET_INDUSTRY_NEWS_TOOL,
+    GET_HIDDEN_GEM_TOOL,
+    GET_DIRECTOR_UPCOMING_TOOL,
 ]
 
 
