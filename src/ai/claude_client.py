@@ -97,8 +97,39 @@ class ConversationContext:
 
         # Trim history if too long
         if len(self.messages) > self.max_history:
-            # Keep system-relevant messages and recent history
-            self.messages = self.messages[-self.max_history :]
+            self._trim_history()
+
+    def _trim_history(self) -> None:
+        """Trim history while preserving tool_use/tool_result pairs.
+
+        Claude API requires every tool_result to have a corresponding tool_use
+        in the previous message. Simple slicing can break this invariant.
+        """
+        if len(self.messages) <= self.max_history:
+            return
+
+        # Start with simple slice
+        start_idx = len(self.messages) - self.max_history
+
+        # Check if first message after trim starts with tool_result
+        # If so, we need to include the preceding assistant message with tool_use
+        while start_idx > 0:
+            first_msg = self.messages[start_idx]
+            if first_msg.role == "user" and self._has_tool_result(first_msg.content):
+                # Need to include the assistant message before this
+                start_idx -= 1
+            else:
+                break
+
+        self.messages = self.messages[start_idx:]
+
+    def _has_tool_result(self, content: str | list[dict[str, Any]]) -> bool:
+        """Check if message content contains tool_result blocks."""
+        if isinstance(content, str):
+            return False
+        return any(
+            isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+        )
 
     def has_thinking_compatible_history(self) -> bool:
         """Check if conversation history is compatible with extended thinking.
@@ -137,8 +168,12 @@ class ConversationContext:
             if strip_thinking and isinstance(msg.content, list):
                 # Filter out thinking blocks and redacted_thinking blocks
                 filtered_content = [
-                    block for block in msg.content
-                    if not (isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"))
+                    block
+                    for block in msg.content
+                    if not (
+                        isinstance(block, dict)
+                        and block.get("type") in ("thinking", "redacted_thinking")
+                    )
                 ]
                 # Skip empty messages after filtering
                 if filtered_content:
@@ -608,7 +643,9 @@ class ClaudeClient:
                     del continuation_params["thinking"]
                     continuation_params["max_tokens"] = 16384
                     # Strip thinking blocks from messages when thinking is disabled
-                    continuation_params["messages"] = context.get_messages_for_api(strip_thinking=True)
+                    continuation_params["messages"] = context.get_messages_for_api(
+                        strip_thinking=True
+                    )
                 else:
                     continuation_params["messages"] = context.get_messages_for_api()
                 response = await self.client.messages.create(**continuation_params)
