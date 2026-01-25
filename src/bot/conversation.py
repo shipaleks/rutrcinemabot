@@ -490,8 +490,16 @@ async def handle_tmdb_search(tool_input: dict[str, Any]) -> str:
         async with TMDBClient(language=language) as client:
             if media_type == "movie":
                 results = await client.search_movie(query, year=year)
+                # Fallback: if year was provided but no results, retry without year
+                if not results and year:
+                    logger.info("tmdb_search_retry_without_year", query=query, original_year=year)
+                    results = await client.search_movie(query, year=None)
             elif media_type == "tv":
                 results = await client.search_tv(query, year=year)
+                # Fallback: if year was provided but no results, retry without year
+                if not results and year:
+                    logger.info("tmdb_search_retry_without_year", query=query, original_year=year)
+                    results = await client.search_tv(query, year=None)
             else:
                 results = await client.search_multi(query)
 
@@ -597,6 +605,85 @@ async def handle_tmdb_person_search(tool_input: dict[str, Any]) -> str:
         logger.warning("tmdb_person_search_failed", error=str(e))
         return json.dumps(
             {"status": "error", "source": "tmdb", "error": str(e)},
+            ensure_ascii=False,
+        )
+
+
+async def handle_tmdb_batch_entity_search(tool_input: dict[str, Any]) -> str:
+    """Handle tmdb_batch_entity_search tool call.
+
+    Searches for multiple people, movies, and TV shows in one call.
+    Returns TMDB IDs for all found entities.
+
+    Args:
+        tool_input: Tool parameters (people, movies, tv_shows arrays).
+
+    Returns:
+        JSON string with found TMDB IDs for each entity.
+    """
+    people = tool_input.get("people", [])
+    movies = tool_input.get("movies", [])
+    tv_shows = tool_input.get("tv_shows", [])
+
+    logger.info(
+        "tmdb_batch_entity_search",
+        people_count=len(people),
+        movies_count=len(movies),
+        tv_shows_count=len(tv_shows),
+    )
+
+    results: dict[str, dict[str, Any]] = {"people": {}, "movies": {}, "tv_shows": {}}
+
+    try:
+        async with TMDBClient() as client:
+            # Search people (limit to 15)
+            for name in people[:15]:
+                try:
+                    search_results = await client.search_person(name)
+                    if search_results:
+                        results["people"][name] = {
+                            "id": search_results[0]["id"],
+                            "name": search_results[0].get("name", name),
+                        }
+                except Exception as e:
+                    logger.debug("batch_person_search_skip", name=name, error=str(e))
+
+            # Search movies (limit to 15)
+            for title in movies[:15]:
+                try:
+                    search_results = await client.search_movie(title)
+                    if search_results:
+                        results["movies"][title] = {
+                            "id": search_results[0].id,
+                            "title": search_results[0].title,
+                        }
+                except Exception as e:
+                    logger.debug("batch_movie_search_skip", title=title, error=str(e))
+
+            # Search TV shows (limit to 15)
+            for title in tv_shows[:15]:
+                try:
+                    search_results = await client.search_tv(title)
+                    if search_results:
+                        results["tv_shows"][title] = {
+                            "id": search_results[0].id,
+                            "name": search_results[0].title,  # SearchResult uses title for both
+                        }
+                except Exception as e:
+                    logger.debug("batch_tv_search_skip", title=title, error=str(e))
+
+        found_count = len(results["people"]) + len(results["movies"]) + len(results["tv_shows"])
+        logger.info("tmdb_batch_entity_search_complete", found_count=found_count)
+
+        return json.dumps(
+            {"status": "success", "results": results},
+            ensure_ascii=False,
+        )
+
+    except TMDBError as e:
+        logger.warning("tmdb_batch_entity_search_failed", error=str(e))
+        return json.dumps(
+            {"status": "error", "error": str(e)},
             ensure_ascii=False,
         )
 
@@ -2374,6 +2461,7 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "piratebay_search": handle_piratebay_search,
             "tmdb_search": handle_tmdb_search,
             "tmdb_person_search": handle_tmdb_person_search,
+            "tmdb_batch_entity_search": handle_tmdb_batch_entity_search,
             "tmdb_credits": handle_tmdb_credits,
             "tmdb_tv_details": handle_tmdb_tv_details,
             "kinopoisk_search": handle_kinopoisk_search,

@@ -182,6 +182,38 @@ TMDB_TV_DETAILS_TOOL = {
     },
 }
 
+TMDB_BATCH_ENTITY_SEARCH_TOOL = {
+    "name": "tmdb_batch_entity_search",
+    "description": (
+        "Пакетный поиск нескольких персон и фильмов ОДНИМ вызовом. "
+        "ИСПОЛЬЗУЙ ЭТОТ ИНСТРУМЕНТ когда нужно получить TMDB ID для нескольких entity сразу — "
+        "например, при формировании ответа про новости с множеством упоминаний людей и фильмов. "
+        "Возвращает словарь с ID для каждого найденного имени/названия. "
+        "Один вызов этого инструмента заменяет 10-15 вызовов tmdb_search/tmdb_person_search."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "people": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Список имён персон для поиска (актёры, режиссёры, сценаристы)",
+            },
+            "movies": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Список названий фильмов для поиска",
+            },
+            "tv_shows": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Список названий сериалов для поиска",
+            },
+        },
+        "required": [],
+    },
+}
+
 KINOPOISK_SEARCH_TOOL = {
     "name": "kinopoisk_search",
     "description": (
@@ -718,11 +750,11 @@ GET_INDUSTRY_NEWS_TOOL = {
         "Поиск актуальных новостей киноиндустрии по ключевым словам. "
         "Сканирует RSS-ленты Deadline, Variety, IndieWire, Hollywood Reporter.\n\n"
         "ВАЖНО:\n"
-        "- Для вопросов про Оскар/Academy Awards используй keywords=['Oscar', 'Academy', 'nomination']\n"
-        "- Для вопросов про фестивали: keywords=['Cannes', 'Venice', 'Berlin', 'Sundance']\n"
-        "- Для режиссёров: keywords=['Director Name', 'Имя']\n"
+        "- Оскар/Academy Awards: keywords=['Oscar', 'Academy', 'nomination']\n"
+        "- Фестивали: keywords=['Cannes', 'Venice', 'Berlin', 'Sundance']\n"
+        "- Режиссёры: keywords=['Director Name', 'Имя']\n"
         "- Используй АНГЛИЙСКИЕ ключевые слова — новости на английском\n"
-        "- Новости НЕ содержат TMDB ID — для ссылок вызови tmdb_search или пиши без ссылок"
+        "- Новости НЕ содержат TMDB ID — используй tmdb_batch_entity_search"
     ),
     "input_schema": {
         "type": "object",
@@ -750,10 +782,10 @@ GET_INDUSTRY_NEWS_TOOL = {
 GET_RECENT_NEWS_TOOL = {
     "name": "get_recent_news",
     "description": (
-        "Получить все последние новости киноиндустрии БЕЗ фильтрации по ключевым словам. "
-        "Используй когда пользователь спрашивает 'какие новости в мире кино' или нужен обзор новостей. "
-        "ВАЖНО: новости НЕ содержат TMDB ID. Для entity ссылок вызови tmdb_search/tmdb_person_search "
-        "по названиям фильмов/именам из новостей. Если не хочешь делать много запросов — пиши без ссылок."
+        "Получить последние новости киноиндустрии БЕЗ фильтрации. "
+        "Используй для обзора новостей ('какие новости в мире кино'). "
+        "ВАЖНО: новости НЕ содержат TMDB ID — вызови tmdb_batch_entity_search "
+        "для получения ID всех людей и фильмов ОДНИМ вызовом."
     ),
     "input_schema": {
         "type": "object",
@@ -978,6 +1010,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
     TMDB_PERSON_SEARCH_TOOL,
     TMDB_CREDITS_TOOL,
     TMDB_TV_DETAILS_TOOL,
+    TMDB_BATCH_ENTITY_SEARCH_TOOL,
     KINOPOISK_SEARCH_TOOL,
     # User profile tools
     GET_USER_PROFILE_TOOL,
