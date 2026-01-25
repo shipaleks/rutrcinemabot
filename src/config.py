@@ -90,6 +90,12 @@ class Settings(BaseSettings):
         description="Seedbox password (optional)",
     )
 
+    # Optional: Sync API Configuration (for VM script authentication)
+    sync_api_key: SecretStr | None = Field(
+        default=None,
+        description="API key for sync script authentication (for NAS sync notifications)",
+    )
+
     # Optional: Letterboxd API Configuration
     letterboxd_client_id: str | None = Field(
         default=None,
