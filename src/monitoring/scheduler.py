@@ -58,8 +58,8 @@ PUSH_MAX_HOUR = 21  # Latest hour to send pushes
 NEWS_CHECK_INTERVAL_HOURS = 24  # Check news once per day
 
 # TMDB enrichment settings
-TMDB_ENRICHMENT_INTERVAL_HOURS = 6  # Enrich watched items every 6 hours
-TMDB_ENRICHMENT_BATCH_SIZE = 50  # Process 50 items per run
+TMDB_ENRICHMENT_INTERVAL_HOURS = 1  # Enrich watched items every hour
+TMDB_ENRICHMENT_BATCH_SIZE = 100  # Process 100 items per run
 
 
 def get_check_interval_hours(release_date: datetime | None) -> int:
@@ -246,7 +246,7 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # Add TMDB enrichment for watched items - every 6 hours
+        # Add TMDB enrichment for watched items - every hour, run immediately on start
         self._scheduler.add_job(
             self._enrich_watched_tmdb,
             trigger=IntervalTrigger(hours=TMDB_ENRICHMENT_INTERVAL_HOURS),
@@ -254,6 +254,7 @@ class MonitoringScheduler:
             name="TMDB Watched Items Enrichment",
             replace_existing=True,
             max_instances=1,
+            next_run_time=datetime.now(UTC),  # Run immediately
         )
 
         self._scheduler.start()
