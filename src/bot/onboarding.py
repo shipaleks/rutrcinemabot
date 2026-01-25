@@ -18,6 +18,7 @@ import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters
 
+from src.bot.conversation import get_conversation_context
 from src.user.storage import get_storage
 
 logger = structlog.get_logger(__name__)
@@ -277,8 +278,10 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
     from src.bot.entity_cards import format_movie_card, format_person_card, format_tv_card
 
     message = update.message
-    if not message:
+    if not message or not message.from_user:
         return False
+
+    user_id = message.from_user.id
 
     # Parse entity type and ID
     if param.startswith("p_"):
@@ -288,6 +291,8 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             logger.info("entity_deep_link", type="person", id=person_id)
             caption, photo_url = await format_person_card(person_id)
             await _send_entity_card(message, caption, photo_url)
+            # Add to conversation context so Claude knows what user is viewing
+            _add_entity_view_to_context(user_id, "person", person_id, caption)
             return True
         except ValueError:
             logger.warning("entity_deep_link_invalid_id", param=param)
@@ -305,6 +310,8 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             logger.info("entity_deep_link", type="movie", id=movie_id)
             caption, photo_url = await format_movie_card(movie_id)
             await _send_entity_card(message, caption, photo_url)
+            # Add to conversation context so Claude knows what user is viewing
+            _add_entity_view_to_context(user_id, "movie", movie_id, caption)
             return True
         except ValueError:
             logger.warning("entity_deep_link_invalid_id", param=param)
@@ -322,6 +329,8 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             logger.info("entity_deep_link", type="tv", id=tv_id)
             caption, photo_url = await format_tv_card(tv_id)
             await _send_entity_card(message, caption, photo_url)
+            # Add to conversation context so Claude knows what user is viewing
+            _add_entity_view_to_context(user_id, "tv", tv_id, caption)
             return True
         except ValueError:
             logger.warning("entity_deep_link_invalid_id", param=param)
@@ -333,6 +342,49 @@ async def _handle_entity_deep_link(update: Update, param: str) -> bool:
             return True
 
     return False
+
+
+def _add_entity_view_to_context(
+    user_id: int, entity_type: str, entity_id: int, caption: str
+) -> None:
+    """Add entity view to conversation context.
+
+    This helps Claude understand what the user was just looking at
+    when they say things like "find torrent for this".
+
+    Args:
+        user_id: Telegram user ID
+        entity_type: "person", "movie", or "tv"
+        entity_id: TMDB ID of the entity
+        caption: HTML caption of the entity card (to extract name)
+    """
+    import re
+
+    # Extract entity name from caption (first <b>...</b> block)
+    name_match = re.search(r"<b>([^<]+)</b>", caption)
+    entity_name = name_match.group(1) if name_match else f"ID {entity_id}"
+
+    # Get or create conversation context
+    context = get_conversation_context(user_id)
+
+    # Create a system-style message about what user is viewing
+    type_names = {"person": "персону", "movie": "фильм", "tv": "сериал"}
+    type_name = type_names.get(entity_type, entity_type)
+
+    # Add as user message so Claude sees it in conversation flow
+    view_message = (
+        f"[Пользователь просматривает карточку: {type_name} \"{entity_name}\" "
+        f"(TMDB {entity_type}_id: {entity_id})]"
+    )
+    context.add_message("user", view_message)
+
+    logger.info(
+        "entity_view_added_to_context",
+        user_id=user_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        entity_name=entity_name,
+    )
 
 
 async def _send_entity_card(message, caption: str, photo_url: str | None) -> None:
