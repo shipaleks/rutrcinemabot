@@ -1113,6 +1113,35 @@ class TMDBClient:
         logger.info("tmdb_search_person", query=query, results_count=len(results))
         return results
 
+    async def get_person(self, person_id: int) -> dict[str, Any]:
+        """Get detailed person information.
+
+        Args:
+            person_id: TMDB person ID
+
+        Returns:
+            Dict with person details including biography, birthday, profile_path, etc.
+
+        Raises:
+            TMDBNotFoundError: Person not found
+        """
+        data = await self._request(f"/person/{person_id}")
+
+        person = {
+            "id": data["id"],
+            "name": data.get("name", ""),
+            "biography": data.get("biography", ""),
+            "birthday": data.get("birthday"),
+            "deathday": data.get("deathday"),
+            "place_of_birth": data.get("place_of_birth"),
+            "profile_path": data.get("profile_path"),
+            "known_for_department": data.get("known_for_department"),
+            "popularity": data.get("popularity", 0),
+        }
+
+        logger.info("tmdb_get_person", person_id=person_id, name=person["name"])
+        return person
+
     async def get_person_movie_credits(
         self,
         person_id: int,

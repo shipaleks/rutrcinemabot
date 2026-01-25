@@ -260,16 +260,118 @@ def get_settings_keyboard(
 
 
 # =============================================================================
+# Entity Deep Link Handler
+# =============================================================================
+
+
+async def _handle_entity_deep_link(update: Update, param: str) -> bool:
+    """Handle entity deep link parameter from /start command.
+
+    Args:
+        update: Telegram update object
+        param: Deep link parameter (e.g., "p_137427", "m_693134", "t_1396")
+
+    Returns:
+        True if handled as entity link, False otherwise
+    """
+    from src.bot.entity_cards import format_movie_card, format_person_card, format_tv_card
+
+    message = update.message
+    if not message:
+        return False
+
+    # Parse entity type and ID
+    if param.startswith("p_"):
+        # Person card
+        try:
+            person_id = int(param[2:])
+            logger.info("entity_deep_link", type="person", id=person_id)
+            caption, photo_url = await format_person_card(person_id)
+            await _send_entity_card(message, caption, photo_url)
+            return True
+        except ValueError:
+            logger.warning("entity_deep_link_invalid_id", param=param)
+            return False
+        except Exception as e:
+            logger.warning("person_card_failed", error=str(e), param=param)
+            await message.reply_text("Не удалось загрузить информацию о персоне.")
+            return True
+
+    elif param.startswith("m_"):
+        # Movie card
+        try:
+            movie_id = int(param[2:])
+            logger.info("entity_deep_link", type="movie", id=movie_id)
+            caption, photo_url = await format_movie_card(movie_id)
+            await _send_entity_card(message, caption, photo_url)
+            return True
+        except ValueError:
+            logger.warning("entity_deep_link_invalid_id", param=param)
+            return False
+        except Exception as e:
+            logger.warning("movie_card_failed", error=str(e), param=param)
+            await message.reply_text("Не удалось загрузить информацию о фильме.")
+            return True
+
+    elif param.startswith("t_"):
+        # TV show card
+        try:
+            tv_id = int(param[2:])
+            logger.info("entity_deep_link", type="tv", id=tv_id)
+            caption, photo_url = await format_tv_card(tv_id)
+            await _send_entity_card(message, caption, photo_url)
+            return True
+        except ValueError:
+            logger.warning("entity_deep_link_invalid_id", param=param)
+            return False
+        except Exception as e:
+            logger.warning("tv_card_failed", error=str(e), param=param)
+            await message.reply_text("Не удалось загрузить информацию о сериале.")
+            return True
+
+    return False
+
+
+async def _send_entity_card(message, caption: str, photo_url: str | None) -> None:
+    """Send entity card as photo with caption or text only.
+
+    Args:
+        message: Telegram message object to reply to
+        caption: HTML-formatted caption text
+        photo_url: URL of the photo to send, or None for text-only
+    """
+    if photo_url:
+        try:
+            await message.reply_photo(
+                photo=photo_url,
+                caption=caption,
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            # Fallback to text if photo fails
+            logger.warning("entity_card_photo_failed", error=str(e))
+            await message.reply_text(caption, parse_mode="HTML")
+    else:
+        await message.reply_text(caption, parse_mode="HTML")
+
+
+# =============================================================================
 # Handlers
 # =============================================================================
 
 
 async def onboarding_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /start command."""
+    """Handle /start command with optional entity deep link."""
     user = update.effective_user
     message = update.message
     if not user or not message:
         return ConversationHandler.END
+
+    # Check for entity deep link parameter (e.g., /start p_137427)
+    if context.args and len(context.args) == 1:
+        param = context.args[0]
+        if await _handle_entity_deep_link(update, param):
+            return ConversationHandler.END
 
     logger.info("onboarding_start", user_id=user.id, username=user.username)
 

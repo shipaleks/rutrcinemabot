@@ -143,6 +143,26 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 - Memorable moments ("нашли тот фильм, который искал месяц").
 - Используй `update_user_profile` с section="notable_interactions" или "conversation_highlights".
 
+## Entity Links (Кликабельные ссылки на сущности)
+
+Когда упоминаешь конкретные фильмы, сериалы или персоны (режиссёров, актёров),
+форматируй их как кликабельные ссылки в тексте:
+
+**Формат:**
+- Персоны: `[Denis Villeneuve](https://t.me/trmoviebot?start=p_137427)`
+- Фильмы: `[Dune: Part Two](https://t.me/trmoviebot?start=m_693134)`
+- Сериалы: `[Breaking Bad](https://t.me/trmoviebot?start=t_1396)`
+
+**Правила:**
+- Используй TMDB ID (получи из tmdb_search, tmdb_credits)
+- p_ = person, m_ = movie, t_ = tv
+- Оборачивай в ссылку все упоминания сущностей, для которых знаешь TMDB ID
+- Для текста ссылки используй оригинальное или английское название
+
+**Пример:**
+"Последний фильм [Denis Villeneuve](https://t.me/trmoviebot?start=p_137427) —
+[Dune: Part Two](https://t.me/trmoviebot?start=m_693134). Сейчас он работает над третьей частью."
+
 ## Формат ответов
 
 ### При поиске торрентов
