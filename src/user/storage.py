@@ -682,6 +682,24 @@ class BaseStorage(ABC):
         """Update rating/review for watched item."""
         pass
 
+    @abstractmethod
+    async def get_watched_without_tmdb_data(
+        self,
+        limit: int = 50,
+    ) -> list[WatchedItem]:
+        """Get watched items that don't have TMDB data (for enrichment)."""
+        pass
+
+    @abstractmethod
+    async def update_watched_tmdb_data(
+        self,
+        watched_id: int,
+        tmdb_id: int,
+        director: str | None = None,
+    ) -> bool:
+        """Update TMDB data for a watched item."""
+        pass
+
     # -------------------------------------------------------------------------
     # Watchlist CRUD
     # -------------------------------------------------------------------------
@@ -2082,6 +2100,39 @@ class SQLiteStorage(BaseStorage):
             watched_at=datetime.fromisoformat(row["watched_at"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
+
+    async def get_watched_without_tmdb_data(
+        self,
+        limit: int = 50,
+    ) -> list[WatchedItem]:
+        """Get watched items that don't have TMDB data (for enrichment)."""
+        cursor = await self.db.execute(
+            """
+            SELECT * FROM watched
+            WHERE tmdb_id IS NULL AND title IS NOT NULL
+            ORDER BY watched_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_watched(row) for row in rows]
+
+    async def update_watched_tmdb_data(
+        self,
+        watched_id: int,
+        tmdb_id: int,
+        director: str | None = None,
+    ) -> bool:
+        """Update TMDB data for a watched item."""
+        # Note: director is stored in a separate table or memory, not in watched
+        # We only update tmdb_id here
+        await self.db.execute(
+            "UPDATE watched SET tmdb_id = ? WHERE id = ?",
+            (tmdb_id, watched_id),
+        )
+        await self.db.commit()
+        return True
 
     # -------------------------------------------------------------------------
     # Watchlist CRUD Implementation
@@ -4273,6 +4324,38 @@ class PostgresStorage(BaseStorage):
             watched_at=row["watched_at"],
             created_at=row["created_at"],
         )
+
+    async def get_watched_without_tmdb_data(
+        self,
+        limit: int = 50,
+    ) -> list[WatchedItem]:
+        """Get watched items that don't have TMDB data (for enrichment)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM watched
+                WHERE tmdb_id IS NULL AND title IS NOT NULL
+                ORDER BY watched_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        return [self._row_to_watched(row) for row in rows]
+
+    async def update_watched_tmdb_data(
+        self,
+        watched_id: int,
+        tmdb_id: int,
+        director: str | None = None,
+    ) -> bool:
+        """Update TMDB data for a watched item."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE watched SET tmdb_id = $1 WHERE id = $2",
+                tmdb_id,
+                watched_id,
+            )
+        return True
 
     # -------------------------------------------------------------------------
     # Watchlist CRUD Implementation
