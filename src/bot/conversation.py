@@ -1983,6 +1983,268 @@ async def handle_letterboxd_sync(tool_input: dict[str, Any]) -> str:
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
+async def handle_get_industry_news(tool_input: dict[str, Any]) -> str:
+    """Handle get_industry_news tool - fetch news from RSS feeds.
+
+    Args:
+        tool_input: Dict with keywords, hours, max_results.
+
+    Returns:
+        JSON with news items.
+    """
+    from src.services.news import NewsService
+
+    keywords = tool_input.get("keywords", [])
+    hours = tool_input.get("hours", 72)
+    max_results = tool_input.get("max_results", 5)
+
+    if not keywords:
+        return json.dumps(
+            {"status": "error", "error": "Нужно указать ключевые слова для поиска"},
+            ensure_ascii=False,
+        )
+
+    try:
+        async with NewsService() as service:
+            news_items = await service.get_relevant_news(
+                keywords=keywords,
+                hours=hours,
+                max_results=max_results,
+            )
+
+            if not news_items:
+                return json.dumps(
+                    {
+                        "status": "no_results",
+                        "message": f"Новостей по запросу '{', '.join(keywords)}' не найдено",
+                    },
+                    ensure_ascii=False,
+                )
+
+            results = []
+            for item in news_items:
+                results.append(
+                    {
+                        "title": item.title,
+                        "description": item.description[:300] if item.description else "",
+                        "source": item.source,
+                        "link": item.link,
+                        "published_at": item.published_at.isoformat()
+                        if item.published_at
+                        else None,
+                        "keywords_matched": item.keywords_matched,
+                    }
+                )
+
+            logger.info(
+                "industry_news_fetched",
+                keywords=keywords,
+                results_count=len(results),
+            )
+
+            return json.dumps(
+                {"status": "success", "news": results},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("industry_news_fetch_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_hidden_gem(tool_input: dict[str, Any]) -> str:
+    """Handle get_hidden_gem tool - generate personalized recommendation.
+
+    Args:
+        tool_input: Dict with user_id.
+
+    Returns:
+        JSON with hidden gem recommendation.
+    """
+    import anthropic
+
+    from src.config import settings
+    from src.user.memory import CoreMemoryManager
+
+    user_id = tool_input.get("user_id")
+    if not user_id:
+        return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    try:
+        async with get_storage() as storage:
+            # Get user's core memory for profile context
+            memory_manager = CoreMemoryManager(storage)
+            profile_blocks = await memory_manager.get_all_blocks(user_id)
+
+            # Build profile context
+            profile_context = ""
+            for block in profile_blocks:
+                if block.content:
+                    profile_context += f"\n{block.block_name}: {block.content}"
+
+            if not profile_context.strip():
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "error": "Недостаточно данных о предпочтениях. Нужно больше информации о вкусах.",
+                    },
+                    ensure_ascii=False,
+                )
+
+            # Get recent watch history
+            watched = await storage.get_watched(user_id, limit=20)
+            watched_titles = [w.title for w in watched]
+
+            # Generate recommendation using Claude
+            prompt = f"""Based on this user's profile, suggest ONE hidden gem film.
+
+Profile:
+{profile_context}
+
+Recently watched: {", ".join(watched_titles[:10]) if watched_titles else "No data"}
+
+Requirements:
+- NOT a blockbuster (no Marvel, Star Wars, Fast & Furious, etc.)
+- NOT in IMDb Top 250
+- Matches user's taste based on profile
+- Released before 2020 (so it's discoverable now)
+- Must be a real film that exists
+
+Return ONLY a JSON object with:
+{{"title": "Film Title", "year": 1999, "reason": "Why this matches their taste (2-3 sentences in Russian)", "director": "Director Name"}}
+
+If you can't find a good match, return {{"error": "Недостаточно данных"}}"""
+
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
+            message = await client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            response = ""
+            for block in message.content:
+                if hasattr(block, "text"):
+                    response += block.text
+
+            # Parse the response
+            import re
+
+            json_match = re.search(r"\{[^{}]+\}", response)
+            if not json_match:
+                return json.dumps(
+                    {"status": "error", "error": "Не удалось сгенерировать рекомендацию"},
+                    ensure_ascii=False,
+                )
+
+            recommendation = json.loads(json_match.group())
+
+            if "error" in recommendation:
+                return json.dumps(
+                    {"status": "error", "error": recommendation["error"]},
+                    ensure_ascii=False,
+                )
+
+            logger.info(
+                "hidden_gem_generated",
+                user_id=user_id,
+                title=recommendation.get("title"),
+            )
+
+            return json.dumps(
+                {"status": "success", "recommendation": recommendation},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("hidden_gem_generation_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+async def handle_get_director_upcoming(tool_input: dict[str, Any]) -> str:
+    """Handle get_director_upcoming tool - get upcoming movies from director.
+
+    Args:
+        tool_input: Dict with director_name.
+
+    Returns:
+        JSON with upcoming movies.
+    """
+    from src.media.tmdb import TMDBClient
+
+    director_name = tool_input.get("director_name")
+    if not director_name:
+        return json.dumps(
+            {"status": "error", "error": "director_name is required"},
+            ensure_ascii=False,
+        )
+
+    try:
+        async with TMDBClient() as tmdb:
+            # Search for the director
+            persons = await tmdb.search_person(director_name)
+            if not persons:
+                return json.dumps(
+                    {"status": "no_results", "message": f"Режиссёр '{director_name}' не найден"},
+                    ensure_ascii=False,
+                )
+
+            # Find the director (prefer known directors)
+            director = None
+            for p in persons:
+                if p.get("known_for_department") == "Directing":
+                    director = p
+                    break
+            if not director:
+                director = persons[0]
+
+            # Get upcoming movies
+            upcoming = await tmdb.get_person_upcoming_movies(
+                director["id"],
+                role="Director",
+            )
+
+            if not upcoming:
+                return json.dumps(
+                    {
+                        "status": "no_results",
+                        "message": f"У {director['name']} нет анонсированных проектов",
+                    },
+                    ensure_ascii=False,
+                )
+
+            results = []
+            for movie in upcoming[:5]:
+                results.append(
+                    {
+                        "title": movie.get("title"),
+                        "tmdb_id": movie.get("id"),
+                        "release_date": movie.get("release_date"),
+                        "overview": movie.get("overview", "")[:200],
+                        "status": movie.get("status", "Announced"),
+                    }
+                )
+
+            logger.info(
+                "director_upcoming_fetched",
+                director=director["name"],
+                movies_count=len(results),
+            )
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "director": director["name"],
+                    "upcoming": results,
+                },
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("director_upcoming_fetch_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
 def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
     """Create and configure a tool executor with all handlers.
 
@@ -2037,6 +2299,10 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "get_crew_stats": handle_get_crew_stats,
             # External service sync
             "letterboxd_sync": handle_letterboxd_sync,
+            # Proactive features
+            "get_industry_news": handle_get_industry_news,
+            "get_hidden_gem": handle_get_hidden_gem,
+            "get_director_upcoming": handle_get_director_upcoming,
         }
     )
 
