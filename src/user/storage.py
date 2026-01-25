@@ -44,6 +44,8 @@ class CredentialType(str, Enum):
 
     TRAKT_TOKEN = "trakt_token"
     TRAKT_REFRESH = "trakt_refresh"
+    SEEDBOX_HOST = "seedbox_host"
+    SEEDBOX_USERNAME = "seedbox_username"
     SEEDBOX_PASSWORD = "seedbox_password"
     RUTRACKER_SESSION = "rutracker_session"
     RUTRACKER_USERNAME = "rutracker_username"
@@ -299,6 +301,25 @@ class PendingPush(BaseModel):
     content: dict[str, Any]  # JSON with push data
     created_at: datetime
     sent_at: datetime | None = None
+
+
+class SyncedTorrent(BaseModel):
+    """Synced torrent model for seedbox tracking.
+
+    Tracks torrents sent to seedbox and their sync status to local NAS.
+    """
+
+    id: int
+    user_id: int
+    torrent_hash: str  # Torrent info hash
+    torrent_name: str  # Display name
+    seedbox_path: str | None = None  # Path on seedbox
+    local_path: str | None = None  # Path on local NAS after sync
+    size_bytes: int | None = None
+    status: str = "downloading"  # downloading, seeding, synced, deleted
+    synced_at: datetime | None = None  # When synced to local NAS
+    deleted_from_seedbox_at: datetime | None = None  # When removed from seedbox
+    created_at: datetime
 
 
 # Block name constants and limits
@@ -1189,6 +1210,57 @@ class BaseStorage(ABC):
         """Delete sent pushes older than N days. Returns count deleted."""
         pass
 
+    # -------------------------------------------------------------------------
+    # Synced Torrents CRUD
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def track_torrent(
+        self,
+        user_id: int,
+        torrent_hash: str,
+        torrent_name: str,
+        seedbox_path: str | None = None,
+        size_bytes: int | None = None,
+    ) -> SyncedTorrent:
+        """Track a torrent sent to seedbox."""
+        pass
+
+    @abstractmethod
+    async def update_torrent_status(
+        self,
+        torrent_hash: str,
+        status: str,
+        synced_at: datetime | None = None,
+        local_path: str | None = None,
+    ) -> bool:
+        """Update torrent sync status."""
+        pass
+
+    @abstractmethod
+    async def get_pending_sync_torrents(
+        self,
+        user_id: int | None = None,
+    ) -> list[SyncedTorrent]:
+        """Get torrents that are seeding (ready for sync)."""
+        pass
+
+    @abstractmethod
+    async def get_user_by_torrent_hash(
+        self,
+        torrent_hash: str,
+    ) -> User | None:
+        """Get user who owns a torrent (for notifications)."""
+        pass
+
+    @abstractmethod
+    async def mark_torrent_deleted(
+        self,
+        torrent_hash: str,
+    ) -> bool:
+        """Mark a torrent as deleted from seedbox."""
+        pass
+
 
 # =============================================================================
 # SQLite Implementation
@@ -1512,6 +1584,27 @@ class SQLiteStorage(BaseStorage):
             # Migration 20: Add default_search_source to preferences
             """
             ALTER TABLE preferences ADD COLUMN default_search_source TEXT DEFAULT 'auto';
+            """,
+            # Migration 21: Synced torrents table for seedbox tracking
+            """
+            CREATE TABLE IF NOT EXISTS synced_torrents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                torrent_hash TEXT NOT NULL,
+                torrent_name TEXT NOT NULL,
+                seedbox_path TEXT,
+                local_path TEXT,
+                size_bytes INTEGER,
+                status TEXT DEFAULT 'downloading',
+                synced_at TEXT,
+                deleted_from_seedbox_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, torrent_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_synced_torrents_user_id ON synced_torrents(user_id);
+            CREATE INDEX IF NOT EXISTS idx_synced_torrents_hash ON synced_torrents(torrent_hash);
+            CREATE INDEX IF NOT EXISTS idx_synced_torrents_status ON synced_torrents(status);
             """,
         ]
 
@@ -3448,6 +3541,130 @@ class SQLiteStorage(BaseStorage):
             sent_at=datetime.fromisoformat(row["sent_at"]) if row["sent_at"] else None,
         )
 
+    # -------------------------------------------------------------------------
+    # Synced Torrents CRUD
+    # -------------------------------------------------------------------------
+
+    async def track_torrent(
+        self,
+        user_id: int,
+        torrent_hash: str,
+        torrent_name: str,
+        seedbox_path: str | None = None,
+        size_bytes: int | None = None,
+    ) -> SyncedTorrent:
+        """Track a torrent sent to seedbox."""
+        now = datetime.now(UTC).isoformat()
+        cursor = await self.db.execute(
+            """
+            INSERT INTO synced_torrents (user_id, torrent_hash, torrent_name, seedbox_path, size_bytes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, torrent_hash) DO UPDATE SET
+                torrent_name = excluded.torrent_name,
+                seedbox_path = excluded.seedbox_path,
+                size_bytes = excluded.size_bytes,
+                status = 'downloading'
+            RETURNING *
+            """,
+            (user_id, torrent_hash, torrent_name, seedbox_path, size_bytes, now),
+        )
+        row = await cursor.fetchone()
+        await self.db.commit()
+
+        if row:
+            return self._row_to_synced_torrent(row)
+
+        # Fallback for older SQLite versions without RETURNING
+        cursor = await self.db.execute(
+            "SELECT * FROM synced_torrents WHERE user_id = ? AND torrent_hash = ?",
+            (user_id, torrent_hash),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_synced_torrent(row)
+
+    async def update_torrent_status(
+        self,
+        torrent_hash: str,
+        status: str,
+        synced_at: datetime | None = None,
+        local_path: str | None = None,
+    ) -> bool:
+        """Update torrent sync status."""
+        synced_at_str = synced_at.isoformat() if synced_at else None
+        cursor = await self.db.execute(
+            """
+            UPDATE synced_torrents SET status = ?, synced_at = ?, local_path = ?
+            WHERE torrent_hash = ?
+            """,
+            (status, synced_at_str, local_path, torrent_hash),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    async def get_pending_sync_torrents(
+        self,
+        user_id: int | None = None,
+    ) -> list[SyncedTorrent]:
+        """Get torrents that are seeding (ready for sync)."""
+        if user_id:
+            cursor = await self.db.execute(
+                "SELECT * FROM synced_torrents WHERE user_id = ? AND status = 'seeding' ORDER BY created_at",
+                (user_id,),
+            )
+        else:
+            cursor = await self.db.execute(
+                "SELECT * FROM synced_torrents WHERE status = 'seeding' ORDER BY created_at",
+            )
+        rows = await cursor.fetchall()
+        return [self._row_to_synced_torrent(row) for row in rows]
+
+    async def get_user_by_torrent_hash(
+        self,
+        torrent_hash: str,
+    ) -> User | None:
+        """Get user who owns a torrent (for notifications)."""
+        cursor = await self.db.execute(
+            """
+            SELECT u.* FROM users u
+            JOIN synced_torrents st ON u.id = st.user_id
+            WHERE st.torrent_hash = ?
+            """,
+            (torrent_hash,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_user(row) if row else None
+
+    async def mark_torrent_deleted(
+        self,
+        torrent_hash: str,
+    ) -> bool:
+        """Mark a torrent as deleted from seedbox."""
+        now = datetime.now(UTC).isoformat()
+        cursor = await self.db.execute(
+            "UPDATE synced_torrents SET status = 'deleted', deleted_from_seedbox_at = ? WHERE torrent_hash = ?",
+            (now, torrent_hash),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    def _row_to_synced_torrent(self, row: Any) -> SyncedTorrent:
+        """Convert database row to SyncedTorrent model."""
+        return SyncedTorrent(
+            id=row["id"],
+            user_id=row["user_id"],
+            torrent_hash=row["torrent_hash"],
+            torrent_name=row["torrent_name"],
+            seedbox_path=row["seedbox_path"],
+            local_path=row["local_path"],
+            size_bytes=row["size_bytes"],
+            status=row["status"] or "downloading",
+            synced_at=datetime.fromisoformat(row["synced_at"]) if row["synced_at"] else None,
+            deleted_from_seedbox_at=datetime.fromisoformat(row["deleted_from_seedbox_at"])
+            if row["deleted_from_seedbox_at"]
+            else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
 
 # =============================================================================
 # PostgreSQL Implementation
@@ -3754,6 +3971,26 @@ class PostgresStorage(BaseStorage):
             # Migration 20: Add default_search_source to preferences
             """
             ALTER TABLE preferences ADD COLUMN IF NOT EXISTS default_search_source TEXT DEFAULT 'auto';
+            """,
+            # Migration 21: Synced torrents table for seedbox tracking
+            """
+            CREATE TABLE IF NOT EXISTS synced_torrents (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                torrent_hash TEXT NOT NULL,
+                torrent_name TEXT NOT NULL,
+                seedbox_path TEXT,
+                local_path TEXT,
+                size_bytes BIGINT,
+                status TEXT DEFAULT 'downloading',
+                synced_at TIMESTAMPTZ,
+                deleted_from_seedbox_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(user_id, torrent_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_synced_torrents_user_id ON synced_torrents(user_id);
+            CREATE INDEX IF NOT EXISTS idx_synced_torrents_hash ON synced_torrents(torrent_hash);
+            CREATE INDEX IF NOT EXISTS idx_synced_torrents_status ON synced_torrents(status);
             """,
         ]
 
@@ -5542,6 +5779,121 @@ class PostgresStorage(BaseStorage):
             content=content,
             created_at=row["created_at"],
             sent_at=row["sent_at"],
+        )
+
+    # -------------------------------------------------------------------------
+    # Synced Torrents CRUD
+    # -------------------------------------------------------------------------
+
+    async def track_torrent(
+        self,
+        user_id: int,
+        torrent_hash: str,
+        torrent_name: str,
+        seedbox_path: str | None = None,
+        size_bytes: int | None = None,
+    ) -> SyncedTorrent:
+        """Track a torrent sent to seedbox."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO synced_torrents (user_id, torrent_hash, torrent_name, seedbox_path, size_bytes)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT(user_id, torrent_hash) DO UPDATE SET
+                    torrent_name = EXCLUDED.torrent_name,
+                    seedbox_path = EXCLUDED.seedbox_path,
+                    size_bytes = EXCLUDED.size_bytes,
+                    status = 'downloading'
+                RETURNING *
+                """,
+                user_id,
+                torrent_hash,
+                torrent_name,
+                seedbox_path,
+                size_bytes,
+            )
+        return self._row_to_synced_torrent(row)
+
+    async def update_torrent_status(
+        self,
+        torrent_hash: str,
+        status: str,
+        synced_at: datetime | None = None,
+        local_path: str | None = None,
+    ) -> bool:
+        """Update torrent sync status."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE synced_torrents SET status = $1, synced_at = $2, local_path = $3
+                WHERE torrent_hash = $4
+                """,
+                status,
+                synced_at,
+                local_path,
+                torrent_hash,
+            )
+        return result == "UPDATE 1"
+
+    async def get_pending_sync_torrents(
+        self,
+        user_id: int | None = None,
+    ) -> list[SyncedTorrent]:
+        """Get torrents that are seeding (ready for sync)."""
+        async with self.pool.acquire() as conn:
+            if user_id:
+                rows = await conn.fetch(
+                    "SELECT * FROM synced_torrents WHERE user_id = $1 AND status = 'seeding' ORDER BY created_at",
+                    user_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM synced_torrents WHERE status = 'seeding' ORDER BY created_at",
+                )
+        return [self._row_to_synced_torrent(row) for row in rows]
+
+    async def get_user_by_torrent_hash(
+        self,
+        torrent_hash: str,
+    ) -> User | None:
+        """Get user who owns a torrent (for notifications)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT u.* FROM users u
+                JOIN synced_torrents st ON u.id = st.user_id
+                WHERE st.torrent_hash = $1
+                """,
+                torrent_hash,
+            )
+        return self._row_to_user(row) if row else None
+
+    async def mark_torrent_deleted(
+        self,
+        torrent_hash: str,
+    ) -> bool:
+        """Mark a torrent as deleted from seedbox."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE synced_torrents SET status = 'deleted', deleted_from_seedbox_at = NOW() WHERE torrent_hash = $1",
+                torrent_hash,
+            )
+        return result == "UPDATE 1"
+
+    def _row_to_synced_torrent(self, row: Any) -> SyncedTorrent:
+        """Convert database row to SyncedTorrent model."""
+        return SyncedTorrent(
+            id=row["id"],
+            user_id=row["user_id"],
+            torrent_hash=row["torrent_hash"],
+            torrent_name=row["torrent_name"],
+            seedbox_path=row["seedbox_path"],
+            local_path=row["local_path"],
+            size_bytes=row["size_bytes"],
+            status=row["status"] or "downloading",
+            synced_at=row["synced_at"],
+            deleted_from_seedbox_at=row["deleted_from_seedbox_at"],
+            created_at=row["created_at"],
         )
 
 

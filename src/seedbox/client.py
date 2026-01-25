@@ -886,6 +886,32 @@ class DelugeClient(SeedboxClient):
 
         return torrents
 
+    async def remove_torrent(self, torrent_hash: str, remove_data: bool = True) -> bool:
+        """Remove a torrent from Deluge.
+
+        Args:
+            torrent_hash: Torrent info hash.
+            remove_data: Whether to also remove downloaded data.
+
+        Returns:
+            True if removal was successful, False otherwise.
+        """
+        try:
+            result = await self._rpc_call(
+                "core.remove_torrent",
+                [torrent_hash, remove_data],
+            )
+            logger.info(
+                "deluge_torrent_removed",
+                hash=torrent_hash,
+                remove_data=remove_data,
+                result=result,
+            )
+            return result is True
+        except SeedboxTorrentError as e:
+            logger.error("deluge_remove_failed", hash=torrent_hash, error=str(e))
+            return False
+
 
 # ============================================================================
 # Factory and Convenience Functions
@@ -1141,3 +1167,97 @@ async def get_torrent_status(torrent_hash: str) -> dict[str, Any]:
             "error": f"Неожиданная ошибка: {e}",
             "hash": torrent_hash,
         }
+
+
+async def send_magnet_to_user_seedbox(
+    magnet_link: str,
+    telegram_id: int | None = None,
+) -> dict[str, Any]:
+    """Send a magnet link to user's seedbox, falling back to global.
+
+    Tries user's personal seedbox credentials first. If not configured
+    or fails, falls back to global seedbox settings.
+
+    Args:
+        magnet_link: Magnet URI to send.
+        telegram_id: Telegram user ID for per-user credentials lookup.
+
+    Returns:
+        Dict with either:
+        - {"status": "sent", "hash": "...", "seedbox": "...", "user_seedbox": True/False}
+        - {"status": "magnet", "magnet": "..."} if no seedbox configured
+        - {"status": "error", "error": "..."} on failure
+    """
+    # Try user's personal seedbox first
+    if telegram_id:
+        from src.bot.seedbox_auth import get_user_seedbox_credentials
+
+        host, username, password = await get_user_seedbox_credentials(telegram_id)
+
+        if host and username and password:
+            logger.info(
+                "trying_user_seedbox",
+                telegram_id=telegram_id,
+                host=host[:30] + "..." if len(host) > 30 else host,
+            )
+
+            try:
+                client = create_seedbox_client(host, username, password)
+                async with client:
+                    torrent_hash = await client.add_magnet(magnet_link)
+
+                    logger.info(
+                        "user_seedbox_magnet_sent",
+                        telegram_id=telegram_id,
+                        hash=torrent_hash,
+                        seedbox_type=type(client).__name__,
+                    )
+
+                    return {
+                        "status": "sent",
+                        "hash": torrent_hash,
+                        "seedbox": host,
+                        "user_seedbox": True,
+                        "message": "Торрент добавлен на ваш seedbox",
+                    }
+
+            except SeedboxAuthError as e:
+                logger.warning(
+                    "user_seedbox_auth_failed",
+                    telegram_id=telegram_id,
+                    error=str(e),
+                )
+                # Don't fall back on auth error - user should fix credentials
+                return {
+                    "status": "error",
+                    "error": f"Ошибка авторизации на вашем seedbox: {e}",
+                    "magnet": magnet_link,
+                    "user_seedbox": True,
+                }
+
+            except SeedboxConnectionError as e:
+                logger.warning(
+                    "user_seedbox_connection_failed",
+                    telegram_id=telegram_id,
+                    error=str(e),
+                )
+                # Fall back to global seedbox
+                logger.info("falling_back_to_global_seedbox", telegram_id=telegram_id)
+
+            except SeedboxTorrentError as e:
+                logger.warning(
+                    "user_seedbox_torrent_failed",
+                    telegram_id=telegram_id,
+                    error=str(e),
+                )
+                return {
+                    "status": "error",
+                    "error": f"Ошибка добавления на ваш seedbox: {e}",
+                    "magnet": magnet_link,
+                    "user_seedbox": True,
+                }
+
+    # Fall back to global seedbox
+    result = await send_magnet_to_seedbox(magnet_link)
+    result["user_seedbox"] = False
+    return result

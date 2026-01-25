@@ -29,7 +29,7 @@ from src.media.omdb import OMDBClient, OMDBError
 from src.media.tmdb import TMDBClient, TMDBError
 from src.search.piratebay import PirateBayClient, PirateBayError
 from src.search.rutracker import RutrackerClient, RutrackerError
-from src.seedbox import send_magnet_to_seedbox
+from src.seedbox import send_magnet_to_user_seedbox
 from src.user.profile import ProfileManager
 from src.user.storage import UserStorage, get_storage
 
@@ -1289,10 +1289,11 @@ async def handle_seedbox_download(tool_input: dict[str, Any]) -> str:
     """
     magnet = tool_input.get("magnet", "")
     name = tool_input.get("name", "Unknown")
+    user_id = tool_input.get("user_id")
 
-    logger.info("seedbox_download", name=name, has_magnet=bool(magnet))
+    logger.info("seedbox_download", name=name, has_magnet=bool(magnet), user_id=user_id)
 
-    result = await send_magnet_to_seedbox(magnet)
+    result = await send_magnet_to_user_seedbox(magnet, user_id)
 
     if result.get("status") == "sent":
         return json.dumps(
@@ -3296,21 +3297,24 @@ async def handle_download_callback(update: Update, _context: ContextTypes.DEFAUL
     if isinstance(magnet, list):
         magnet = magnet[0] if magnet else ""
 
+    telegram_id = query.from_user.id if query.from_user else None
     logger.info(
         "sending_magnet_to_user",
         result_id=result_id,
+        telegram_id=telegram_id,
         magnet_length=len(magnet),
         magnet_preview=magnet[:100] if magnet else "empty",
     )
 
-    # Try to send to seedbox
-    download_result = await send_magnet_to_seedbox(magnet)
+    # Try to send to seedbox (user's first, then global fallback)
+    download_result = await send_magnet_to_user_seedbox(magnet, telegram_id)
 
     if download_result.get("status") == "sent":
+        seedbox_label = "ваш seedbox" if download_result.get("user_seedbox") else "seedbox"
         await query.edit_message_text(
             f"Торрент добавлен на скачивание!\n\n"
             f"<b>{title}</b>\n\n"
-            f"Скачивание началось на вашем seedbox.",
+            f"Скачивание началось на {seedbox_label}.",
             parse_mode="HTML",
         )
     else:
@@ -3733,15 +3737,17 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
 
     await query.answer("Отправляю на seedbox...")
     message = query.message
+    telegram_id = query.from_user.id if query.from_user else None
 
-    # Try to send to seedbox
+    # Try to send to seedbox (user's first, then global fallback)
     try:
-        download_result = await send_magnet_to_seedbox(magnet)
+        download_result = await send_magnet_to_user_seedbox(magnet, telegram_id)
 
         if download_result.get("status") == "sent":
+            seedbox_label = "ваш seedbox" if download_result.get("user_seedbox") else "seedbox"
             if message:
                 await message.reply_text(
-                    f"✅ Торрент добавлен на seedbox\n\n"
+                    f"✅ Торрент добавлен на {seedbox_label}\n\n"
                     f"<b>{title[:60]}</b>\n"
                     f"📡 {download_result.get('seedbox', 'Unknown')}",
                     parse_mode="HTML",
@@ -3749,13 +3755,26 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
             logger.info(
                 "seedbox_sent",
                 result_id=result_id,
-                user_id=query.from_user.id if query.from_user else None,
+                user_id=telegram_id,
+                user_seedbox=download_result.get("user_seedbox"),
             )
 
             # Record the download for follow-up
             if query.from_user:
                 await _record_download(query.from_user.id, result, magnet)
             return
+
+        # Handle specific error from user's seedbox
+        if download_result.get("status") == "error" and download_result.get("user_seedbox"):
+            if message:
+                await message.reply_text(
+                    f"⚠️ {download_result.get('error', 'Ошибка seedbox')}\n\n"
+                    f"Проверьте настройки: /seedbox\n\n"
+                    f"🔗 Магнет-ссылка:\n<code>{magnet[:3500]}</code>",
+                    parse_mode="HTML",
+                )
+            return
+
     except Exception as e:
         logger.warning("seedbox_send_failed", error=str(e))
 
@@ -3763,6 +3782,7 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
     if message:
         await message.reply_text(
             f"⚠️ Seedbox не настроен или недоступен.\n\n"
+            f"Настройте: /seedbox\n\n"
             f"🔗 Магнет-ссылка:\n<code>{magnet[:3500]}</code>",
             parse_mode="HTML",
         )
@@ -4040,14 +4060,15 @@ async def _handle_monitor_download(query: Any, telegram_id: int, monitor_id: int
         quality = monitor.found_data.get("quality", "")
         size = monitor.found_data.get("size", "")
 
-        # Try to send to seedbox
+        # Try to send to seedbox (user's first, then global fallback)
         try:
-            result = await send_magnet_to_seedbox(magnet)
+            result = await send_magnet_to_user_seedbox(magnet, telegram_id)
             if result.get("status") == "sent":
                 torrent_hash = result.get("hash", "")[:8]
+                seedbox_label = "ваш seedbox" if result.get("user_seedbox") else "seedbox"
                 await query.edit_message_text(
                     f"**{title}** ({quality}, {size})\n\n"
-                    f"✅ Отправлено на seedbox\n"
+                    f"✅ Отправлено на {seedbox_label}\n"
                     f"Hash: `{torrent_hash}...`",
                     parse_mode="Markdown",
                 )
