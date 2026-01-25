@@ -2049,6 +2049,68 @@ async def handle_get_industry_news(tool_input: dict[str, Any]) -> str:
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
+async def handle_get_recent_news(tool_input: dict[str, Any]) -> str:
+    """Handle get_recent_news tool - fetch all recent news without filtering.
+
+    Args:
+        tool_input: Dict with hours, max_results.
+
+    Returns:
+        JSON with news items.
+    """
+    from src.services.news import NewsService
+
+    hours = tool_input.get("hours", 24)
+    max_results = tool_input.get("max_results", 10)
+
+    try:
+        async with NewsService() as service:
+            news_items = await service.get_all_recent_news(
+                hours=hours,
+                max_per_feed=max_results // 4 + 1,  # Distribute across feeds
+            )
+
+            if not news_items:
+                return json.dumps(
+                    {
+                        "status": "no_results",
+                        "message": "Новостей за указанный период не найдено",
+                    },
+                    ensure_ascii=False,
+                )
+
+            # Limit results
+            news_items = news_items[:max_results]
+
+            results = []
+            for item in news_items:
+                results.append(
+                    {
+                        "title": item.title,
+                        "description": item.description[:300] if item.description else "",
+                        "source": item.source,
+                        "link": item.link,
+                        "published_at": item.published_at.isoformat()
+                        if item.published_at
+                        else None,
+                    }
+                )
+
+            logger.info(
+                "recent_news_fetched",
+                results_count=len(results),
+            )
+
+            return json.dumps(
+                {"status": "success", "news": results},
+                ensure_ascii=False,
+            )
+
+    except Exception as e:
+        logger.warning("recent_news_fetch_failed", error=str(e))
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
 async def handle_get_hidden_gem(tool_input: dict[str, Any]) -> str:
     """Handle get_hidden_gem tool - generate personalized recommendation.
 
@@ -2298,6 +2360,7 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "letterboxd_sync": handle_letterboxd_sync,
             # Proactive features
             "get_industry_news": handle_get_industry_news,
+            "get_recent_news": handle_get_recent_news,
             "get_hidden_gem": handle_get_hidden_gem,
             "get_director_upcoming": handle_get_director_upcoming,
         }

@@ -696,8 +696,12 @@ GET_INDUSTRY_NEWS_TOOL = {
     "name": "get_industry_news",
     "description": (
         "Поиск актуальных новостей киноиндустрии по ключевым словам. "
-        "Сканирует RSS-ленты Deadline, Variety, IndieWire, Hollywood Reporter. "
-        "Используй для ответа на вопросы про новости о режиссёрах, актёрах, студиях."
+        "Сканирует RSS-ленты Deadline, Variety, IndieWire, Hollywood Reporter.\n\n"
+        "ВАЖНО:\n"
+        "- Для вопросов про Оскар/Academy Awards используй keywords=['Oscar', 'Academy', 'nomination']\n"
+        "- Для вопросов про фестивали: keywords=['Cannes', 'Venice', 'Berlin', 'Sundance']\n"
+        "- Для режиссёров: keywords=['Director Name', 'Имя']\n"
+        "- Используй АНГЛИЙСКИЕ ключевые слова — новости на английском"
     ),
     "input_schema": {
         "type": "object",
@@ -705,7 +709,7 @@ GET_INDUSTRY_NEWS_TOOL = {
             "keywords": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Ключевые слова для поиска (имена режиссёров, актёров, названия фильмов)",
+                "description": "Ключевые слова на АНГЛИЙСКОМ (Oscar, Cannes, имена режиссёров)",
             },
             "hours": {
                 "type": "integer",
@@ -719,6 +723,30 @@ GET_INDUSTRY_NEWS_TOOL = {
             },
         },
         "required": ["keywords"],
+    },
+}
+
+GET_RECENT_NEWS_TOOL = {
+    "name": "get_recent_news",
+    "description": (
+        "Получить все последние новости киноиндустрии БЕЗ фильтрации по ключевым словам. "
+        "Используй когда пользователь спрашивает 'какие новости в мире кино' или нужен обзор новостей."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "hours": {
+                "type": "integer",
+                "description": "За сколько часов (по умолчанию 24)",
+                "default": 24,
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Максимум результатов (по умолчанию 10)",
+                "default": 10,
+            },
+        },
+        "required": [],
     },
 }
 
@@ -959,6 +987,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
     LETTERBOXD_SYNC_TOOL,
     # Proactive features
     GET_INDUSTRY_NEWS_TOOL,
+    GET_RECENT_NEWS_TOOL,
     GET_HIDDEN_GEM_TOOL,
     GET_DIRECTOR_UPCOMING_TOOL,
 ]
