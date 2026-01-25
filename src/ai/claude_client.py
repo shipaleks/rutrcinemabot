@@ -122,13 +122,30 @@ class ConversationContext:
                         return False
         return True
 
-    def get_messages_for_api(self) -> list[dict[str, Any]]:
+    def get_messages_for_api(self, strip_thinking: bool = False) -> list[dict[str, Any]]:
         """Get messages formatted for the Anthropic API.
+
+        Args:
+            strip_thinking: If True, remove thinking blocks from messages.
+                           Required when continuing without thinking enabled.
 
         Returns:
             List of message dicts ready for the API.
         """
-        return [{"role": msg.role, "content": msg.content} for msg in self.messages]
+        messages = []
+        for msg in self.messages:
+            if strip_thinking and isinstance(msg.content, list):
+                # Filter out thinking blocks and redacted_thinking blocks
+                filtered_content = [
+                    block for block in msg.content
+                    if not (isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking"))
+                ]
+                # Skip empty messages after filtering
+                if filtered_content:
+                    messages.append({"role": msg.role, "content": filtered_content})
+            else:
+                messages.append({"role": msg.role, "content": msg.content})
+        return messages
 
     def clear(self) -> None:
         """Clear the conversation history."""
@@ -355,11 +372,14 @@ class ClaudeClient:
             # Check if response has thinking blocks to decide whether to keep thinking enabled
             has_thinking = any(block.type == "thinking" for block in response.content)
             continuation_params = params.copy()
-            continuation_params["messages"] = context.get_messages_for_api()
             # Only disable thinking if response didn't have thinking blocks
             if "thinking" in continuation_params and not has_thinking:
                 del continuation_params["thinking"]
                 continuation_params["max_tokens"] = 16384
+                # Strip thinking blocks from messages when thinking is disabled
+                continuation_params["messages"] = context.get_messages_for_api(strip_thinking=True)
+            else:
+                continuation_params["messages"] = context.get_messages_for_api()
             response = await self.client.messages.create(**continuation_params)
 
         # Max iterations reached
@@ -583,11 +603,14 @@ class ClaudeClient:
 
                 # Continue conversation - keep thinking if response had thinking blocks
                 continuation_params = params.copy()
-                continuation_params["messages"] = context.get_messages_for_api()
                 # Only disable thinking if response didn't have thinking blocks
                 if "thinking" in continuation_params and not has_thinking:
                     del continuation_params["thinking"]
                     continuation_params["max_tokens"] = 16384
+                    # Strip thinking blocks from messages when thinking is disabled
+                    continuation_params["messages"] = context.get_messages_for_api(strip_thinking=True)
+                else:
+                    continuation_params["messages"] = context.get_messages_for_api()
                 response = await self.client.messages.create(**continuation_params)
 
                 # Extract final text from continued response
