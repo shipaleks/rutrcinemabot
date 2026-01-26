@@ -3020,15 +3020,31 @@ async def send_search_results_cards(
     Returns:
         List of sent message IDs.
     """
-    # Get and sort results by seeds
+    # Get and sort results by quality (best first), then by seeds
     results_with_ids = []
     for rid in result_ids:
         result_data = get_cached_result(rid)
         if result_data:
             results_with_ids.append((rid, result_data))
 
-    # Sort by seeds descending
-    results_with_ids.sort(key=lambda x: x[1].get("seeds", 0), reverse=True)
+    # Quality priority: 4K/2160p > 1080p > 720p > others
+    def quality_priority(quality: str | None) -> int:
+        if not quality:
+            return 0
+        q = quality.upper()
+        if "4K" in q or "2160" in q or "UHD" in q:
+            return 100
+        if "1080" in q:
+            return 50
+        if "720" in q:
+            return 25
+        return 10
+
+    # Sort by quality first (descending), then by seeds (descending)
+    results_with_ids.sort(
+        key=lambda x: (quality_priority(x[1].get("quality")), x[1].get("seeds", 0)),
+        reverse=True,
+    )
 
     # Limit results
     results_with_ids = results_with_ids[:max_results]
