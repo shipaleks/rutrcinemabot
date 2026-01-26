@@ -734,7 +734,8 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
 
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+            # Use wt-wt (worldwide) region for English results
+            results = list(ddgs.text(query, region="wt-wt", max_results=max_results))
 
         formatted_results = []
         for r in results:
