@@ -490,16 +490,38 @@ async def handle_tmdb_search(tool_input: dict[str, Any]) -> str:
         async with TMDBClient(language=language) as client:
             if media_type == "movie":
                 results = await client.search_movie(query, year=year)
-                # Fallback: if year was provided but no results, retry without year
-                if not results and year:
-                    logger.info("tmdb_search_retry_without_year", query=query, original_year=year)
-                    results = await client.search_movie(query, year=None)
+                # Fallback: if year was provided and few results, also search without year
+                if year and len(results) <= 2:
+                    logger.info(
+                        "tmdb_search_augment_without_year",
+                        query=query,
+                        original_year=year,
+                        results_with_year=len(results),
+                    )
+                    more_results = await client.search_movie(query, year=None)
+                    # Merge results, keeping unique IDs (year-filtered first)
+                    seen_ids = {r.id for r in results}
+                    for r in more_results:
+                        if r.id not in seen_ids:
+                            results.append(r)
+                            seen_ids.add(r.id)
             elif media_type == "tv":
                 results = await client.search_tv(query, year=year)
-                # Fallback: if year was provided but no results, retry without year
-                if not results and year:
-                    logger.info("tmdb_search_retry_without_year", query=query, original_year=year)
-                    results = await client.search_tv(query, year=None)
+                # Fallback: if year was provided and few results, also search without year
+                if year and len(results) <= 2:
+                    logger.info(
+                        "tmdb_search_augment_without_year",
+                        query=query,
+                        original_year=year,
+                        results_with_year=len(results),
+                    )
+                    more_results = await client.search_tv(query, year=None)
+                    # Merge results, keeping unique IDs (year-filtered first)
+                    seen_ids = {r.id for r in results}
+                    for r in more_results:
+                        if r.id not in seen_ids:
+                            results.append(r)
+                            seen_ids.add(r.id)
             else:
                 results = await client.search_multi(query)
 
@@ -727,7 +749,9 @@ async def handle_tmdb_credits(tool_input: dict[str, Any]) -> str:
                     "tmdb_id": tmdb_id,
                     "directors": [{"id": d.id, "name": d.name} for d in directors],
                     "writers": [{"id": w.id, "name": w.name} for w in writers],
-                    "cast": [{"id": p.id, "name": p.name, "character": p.character} for p in top_cast],
+                    "cast": [
+                        {"id": p.id, "name": p.name, "character": p.character} for p in top_cast
+                    ],
                 },
                 ensure_ascii=False,
             )
