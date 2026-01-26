@@ -7,11 +7,13 @@ It enables natural language queries like "найди Дюну в 4K" to be under
 by Claude, which then uses the appropriate tools to search and return results.
 """
 
+import asyncio
 import contextlib
 import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -710,14 +712,67 @@ async def handle_tmdb_batch_entity_search(tool_input: dict[str, Any]) -> str:
         )
 
 
+async def _fetch_page_content(
+    client: httpx.AsyncClient, url: str, max_chars: int = 800
+) -> tuple[str, str]:
+    """Fetch and parse page content from URL.
+
+    Args:
+        client: httpx async client.
+        url: URL to fetch.
+        max_chars: Maximum characters to return.
+
+    Returns:
+        Tuple of (content, fetch_status).
+    """
+    from bs4 import BeautifulSoup
+
+    try:
+        response = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "lxml")
+
+        # Remove scripts, styles, navigation elements
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form"]):
+            tag.decompose()
+
+        # Extract text
+        text = soup.get_text(separator=" ", strip=True)
+
+        # Clean up whitespace
+        text = " ".join(text.split())
+
+        return text[:max_chars], "success"
+
+    except httpx.TimeoutException:
+        return "", "timeout"
+    except httpx.HTTPStatusError as e:
+        logger.debug("web_fetch_http_error", url=url, status=e.response.status_code)
+        return "", f"http_{e.response.status_code}"
+    except Exception as e:
+        logger.debug("web_fetch_failed", url=url, error=str(e))
+        return "", "failed"
+
+
 async def handle_web_search(tool_input: dict[str, Any]) -> str:
-    """Handle web_search tool call using DuckDuckGo.
+    """Handle web_search tool call using DuckDuckGo with content fetching.
+
+    Searches DuckDuckGo and fetches full content from top 3 results
+    to provide Claude with actual page content, not just snippets.
 
     Args:
         tool_input: Tool parameters (query, max_results).
 
     Returns:
-        JSON string with search results.
+        JSON string with search results including fetched content.
     """
     from duckduckgo_search import DDGS
 
@@ -738,7 +793,65 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
             results = list(ddgs.text(query, region="wt-wt", max_results=max_results))
 
         formatted_results = []
-        for r in results:
+
+        # Fetch full content for top 3 results
+        top_results = results[:3]
+        remaining_results = results[3:]
+
+        if top_results:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Build fetch tasks only for results with URLs
+                url_to_index: dict[str, int] = {}
+                fetch_tasks = []
+                for i, r in enumerate(top_results):
+                    url = r.get("href", "")
+                    if url:
+                        url_to_index[url] = i
+                        fetch_tasks.append(_fetch_page_content(client, url))
+
+                # Fetch all URLs concurrently
+                fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+                # Map results back to URLs
+                fetch_map: dict[str, tuple[str, str]] = {}
+                for url, result in zip(url_to_index.keys(), fetch_results, strict=True):
+                    if isinstance(result, BaseException):
+                        fetch_map[url] = ("", "exception")
+                    else:
+                        fetch_map[url] = result
+
+                # Build formatted results
+                for r in top_results:
+                    url = r.get("href", "")
+                    snippet = r.get("body", "")
+
+                    if url and url in fetch_map:
+                        content, fetch_status = fetch_map[url]
+                        if not content:
+                            content = snippet  # Fallback to snippet
+                    else:
+                        content = snippet
+                        fetch_status = "no_url" if not url else "skipped"
+
+                    formatted_results.append(
+                        {
+                            "title": r.get("title", ""),
+                            "url": url,
+                            "snippet": snippet,
+                            "content": content,
+                            "fetch_status": fetch_status,
+                        }
+                    )
+
+                    logger.debug(
+                        "web_search_fetch",
+                        url=url[:50] if url else "",
+                        fetch_status=fetch_status,
+                        content_length=len(content),
+                    )
+
+        # Add remaining results without fetching
+        for r in remaining_results:
             formatted_results.append(
                 {
                     "title": r.get("title", ""),
@@ -747,7 +860,12 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
                 }
             )
 
-        logger.info("web_search_complete", query=query, results_count=len(formatted_results))
+        logger.info(
+            "web_search_complete",
+            query=query,
+            results_count=len(formatted_results),
+            fetched_count=len(top_results),
+        )
 
         return json.dumps(
             {
