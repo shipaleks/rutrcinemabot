@@ -820,7 +820,15 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
 
     # Check if Yandex Search API is configured
     if not settings.has_yandex_search:
-        logger.warning("yandex_search_not_configured")
+        # Debug: log which values are missing
+        has_key = settings.yandex_search_api_key is not None
+        has_folder = settings.yandex_search_folder_id is not None
+        logger.warning(
+            "yandex_search_not_configured",
+            has_api_key=has_key,
+            has_folder_id=has_folder,
+            folder_id_value=settings.yandex_search_folder_id[:10] if settings.yandex_search_folder_id else None,
+        )
         return json.dumps(
             {"status": "error", "error": "Yandex Search API is not configured"},
             ensure_ascii=False,
