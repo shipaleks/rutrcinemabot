@@ -317,7 +317,13 @@ def get_system_prompt(
     Returns:
         Complete system prompt with user context appended.
     """
+    from datetime import datetime
+
     prompt = MEDIA_CONCIERGE_SYSTEM_PROMPT
+
+    # Add current date so Claude knows what year it is
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    prompt += f"\n\n**Сегодняшняя дата: {current_date}**\n"
 
     context_parts: list[str] = []
 
