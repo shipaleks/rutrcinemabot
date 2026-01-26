@@ -106,6 +106,17 @@ class Settings(BaseSettings):
         description="Letterboxd OAuth redirect URI",
     )
 
+    # Optional: Yandex Search API Configuration
+    yandex_search_api_key: SecretStr | None = Field(
+        default=None,
+        description="Yandex Search API key for web search",
+    )
+
+    yandex_search_folder_id: str | None = Field(
+        default=None,
+        description="Yandex Cloud folder ID for Search API",
+    )
+
     # Application Configuration
     log_level: str = Field(
         default="INFO",
@@ -212,6 +223,11 @@ class Settings(BaseSettings):
                 self.letterboxd_client_secret,
             ]
         )
+
+    @property
+    def has_yandex_search(self) -> bool:
+        """Check if Yandex Search API is configured."""
+        return all([self.yandex_search_api_key, self.yandex_search_folder_id])
 
     def get_safe_dict(self) -> dict[str, str | int | None]:
         """Get configuration as dict with sensitive values masked.

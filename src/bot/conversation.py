@@ -8,12 +8,14 @@ by Claude, which then uses the appropriate tools to search and return results.
 """
 
 import asyncio
+import base64
 import contextlib
 import json
 from pathlib import Path
 from typing import Any
 
 import httpx
+from lxml import etree
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -762,10 +764,43 @@ async def _fetch_page_content(
         return "", "failed"
 
 
-async def handle_web_search(tool_input: dict[str, Any]) -> str:
-    """Handle web_search tool call using DuckDuckGo with content fetching.
+def _extract_text_from_xml_element(elem) -> str:
+    """Extract text from XML element, stripping <hlword> tags."""
+    if elem is None:
+        return ""
+    return "".join(elem.itertext()).strip()
 
-    Searches DuckDuckGo and fetches full content from top 3 results
+
+def _parse_yandex_xml_results(root, max_results: int) -> list[dict[str, str]]:
+    """Parse Yandex XML response to extract search results."""
+    results = []
+    groups = root.xpath("//group")
+
+    for group in groups[:max_results]:
+        doc = group.find("doc")
+        if doc is None:
+            continue
+
+        url = doc.findtext("url", "")
+        if not url:
+            continue
+
+        title = _extract_text_from_xml_element(doc.find("title"))
+
+        snippet = ""
+        passages = doc.find("passages")
+        if passages is not None:
+            snippet = _extract_text_from_xml_element(passages.find("passage"))
+
+        results.append({"title": title, "url": url, "snippet": snippet})
+
+    return results
+
+
+async def handle_web_search(tool_input: dict[str, Any]) -> str:
+    """Handle web_search tool call using Yandex Search API with content fetching.
+
+    Searches Yandex and fetches full content from top 3 results
     to provide Claude with actual page content, not just snippets.
 
     Args:
@@ -774,8 +809,6 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
     Returns:
         JSON string with search results including fetched content.
     """
-    from duckduckgo_search import DDGS
-
     query = tool_input.get("query", "")
     max_results = tool_input.get("max_results", 5)
 
@@ -785,12 +818,56 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
             ensure_ascii=False,
         )
 
-    logger.info("web_search", query=query, max_results=max_results)
+    # Check if Yandex Search API is configured
+    if not settings.has_yandex_search:
+        logger.warning("yandex_search_not_configured")
+        return json.dumps(
+            {"status": "error", "error": "Yandex Search API is not configured"},
+            ensure_ascii=False,
+        )
+
+    logger.info("web_search_yandex", query=query, max_results=max_results)
 
     try:
-        with DDGS() as ddgs:
-            # Use wt-wt (worldwide) region for English results
-            results = list(ddgs.text(query, region="wt-wt", max_results=max_results))
+        # Call Yandex Search API v2
+        # These are guaranteed to be non-None by has_yandex_search check above
+        assert settings.yandex_search_api_key is not None
+        assert settings.yandex_search_folder_id is not None
+        api_key = settings.yandex_search_api_key.get_secret_value()
+        folder_id = settings.yandex_search_folder_id
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://searchapi.api.cloud.yandex.net/v2/web/search",
+                headers={
+                    "Authorization": f"Api-Key {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query},
+                    "folderId": folder_id,
+                    "responseFormat": "FORMAT_XML",
+                },
+            )
+            response.raise_for_status()
+
+            # Parse response - XML is returned as base64
+            response_data = response.json()
+            xml_base64 = response_data.get("rawData", "")
+
+            if not xml_base64:
+                logger.warning("yandex_search_empty_response", query=query)
+                return json.dumps(
+                    {"status": "no_results", "query": query, "results": []},
+                    ensure_ascii=False,
+                )
+
+            # Decode base64 and parse XML
+            xml_bytes = base64.b64decode(xml_base64)
+            root = etree.fromstring(xml_bytes)
+
+            # Parse search results
+            results = _parse_yandex_xml_results(root, max_results)
 
         formatted_results = []
 
@@ -804,7 +881,7 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
                 url_to_index: dict[str, int] = {}
                 fetch_tasks = []
                 for i, r in enumerate(top_results):
-                    url = r.get("href", "")
+                    url = r.get("url", "")
                     if url:
                         url_to_index[url] = i
                         fetch_tasks.append(_fetch_page_content(client, url))
@@ -822,8 +899,8 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
 
                 # Build formatted results
                 for r in top_results:
-                    url = r.get("href", "")
-                    snippet = r.get("body", "")
+                    url = r.get("url", "")
+                    snippet = r.get("snippet", "")
 
                     if url and url in fetch_map:
                         content, fetch_status = fetch_map[url]
@@ -855,13 +932,13 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
             formatted_results.append(
                 {
                     "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("snippet", ""),
                 }
             )
 
         logger.info(
-            "web_search_complete",
+            "web_search_yandex_complete",
             query=query,
             results_count=len(formatted_results),
             fetched_count=len(top_results),
@@ -877,6 +954,17 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
             ensure_ascii=False,
         )
 
+    except httpx.HTTPStatusError as e:
+        logger.warning(
+            "yandex_search_http_error",
+            query=query,
+            status=e.response.status_code,
+            body=e.response.text[:200],
+        )
+        return json.dumps(
+            {"status": "error", "error": f"Yandex Search API error: {e.response.status_code}"},
+            ensure_ascii=False,
+        )
     except Exception as e:
         logger.warning("web_search_failed", query=query, error=str(e))
         return json.dumps(
