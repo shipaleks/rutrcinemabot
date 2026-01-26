@@ -43,8 +43,8 @@ _conversation_contexts: dict[int, ConversationContext] = {}
 
 # Store search results for download callbacks
 _search_results_cache: dict[str, dict[str, Any]] = {}
-# Track result IDs that were cached/touched in the current request
-_current_request_result_ids: set[str] = set()
+# Track result IDs that were cached/touched in the current request (preserves order)
+_current_request_result_ids: list[str] = []
 
 
 def get_conversation_context(user_id: int) -> ConversationContext:
@@ -106,7 +106,9 @@ def cache_search_result(result_id: str, result_data: dict[str, Any]) -> None:
 
     _search_results_cache[result_id] = result_data
     # Track this ID as touched in the current request (for card sending)
-    _current_request_result_ids.add(result_id)
+    # Use list to preserve order (first search results first)
+    if result_id not in _current_request_result_ids:
+        _current_request_result_ids.append(result_id)
     # Keep cache size reasonable
     if len(_search_results_cache) > 1000:
         # Remove oldest entries
