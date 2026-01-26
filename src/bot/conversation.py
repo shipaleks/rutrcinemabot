@@ -710,6 +710,62 @@ async def handle_tmdb_batch_entity_search(tool_input: dict[str, Any]) -> str:
         )
 
 
+async def handle_web_search(tool_input: dict[str, Any]) -> str:
+    """Handle web_search tool call using DuckDuckGo.
+
+    Args:
+        tool_input: Tool parameters (query, max_results).
+
+    Returns:
+        JSON string with search results.
+    """
+    from duckduckgo_search import DDGS
+
+    query = tool_input.get("query", "")
+    max_results = tool_input.get("max_results", 5)
+
+    if not query:
+        return json.dumps(
+            {"status": "error", "error": "query is required"},
+            ensure_ascii=False,
+        )
+
+    logger.info("web_search", query=query, max_results=max_results)
+
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+
+        formatted_results = []
+        for r in results:
+            formatted_results.append(
+                {
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                }
+            )
+
+        logger.info("web_search_complete", query=query, results_count=len(formatted_results))
+
+        return json.dumps(
+            {
+                "status": "success",
+                "query": query,
+                "results_count": len(formatted_results),
+                "results": formatted_results,
+            },
+            ensure_ascii=False,
+        )
+
+    except Exception as e:
+        logger.warning("web_search_failed", query=query, error=str(e))
+        return json.dumps(
+            {"status": "error", "error": f"Web search failed: {str(e)}"},
+            ensure_ascii=False,
+        )
+
+
 async def handle_tmdb_credits(tool_input: dict[str, Any]) -> str:
     """Handle tmdb_credits tool call.
 
@@ -2524,6 +2580,8 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "get_recent_news": handle_get_recent_news,
             "get_hidden_gem": handle_get_hidden_gem,
             "get_director_upcoming": handle_get_director_upcoming,
+            # Web search
+            "web_search": handle_web_search,
         }
     )
 

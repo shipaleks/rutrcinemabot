@@ -214,6 +214,35 @@ TMDB_BATCH_ENTITY_SEARCH_TOOL = {
     },
 }
 
+WEB_SEARCH_TOOL = {
+    "name": "web_search",
+    "description": (
+        "Поиск актуальной информации в интернете через DuckDuckGo. "
+        "ИСПОЛЬЗУЙ для проверки свежих фактов, которых может не быть в TMDB или новостных RSS: "
+        "- Номинанты/победители премий (Оскар, Золотой глобус, etc.)\n"
+        "- Свежие анонсы фильмов и сериалов\n"
+        "- Актуальные новости о персонах (новые проекты режиссёров/актёров)\n"
+        "- Даты релизов и премьер\n"
+        "- Любая информация, требующая проверки в реальном времени\n"
+        "Возвращает топ результатов поиска с заголовками, описаниями и ссылками."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Поисковый запрос (лучше на английском для международных тем)",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Максимум результатов (по умолчанию 5)",
+                "default": 5,
+            },
+        },
+        "required": ["query"],
+    },
+}
+
 KINOPOISK_SEARCH_TOOL = {
     "name": "kinopoisk_search",
     "description": (
@@ -1047,6 +1076,8 @@ ALL_TOOLS: list[dict[str, Any]] = [
     GET_RECENT_NEWS_TOOL,
     GET_HIDDEN_GEM_TOOL,
     GET_DIRECTOR_UPCOMING_TOOL,
+    # Web search for current information
+    WEB_SEARCH_TOOL,
 ]
 
 
