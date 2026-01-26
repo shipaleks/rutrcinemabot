@@ -43,6 +43,8 @@ _conversation_contexts: dict[int, ConversationContext] = {}
 
 # Store search results for download callbacks
 _search_results_cache: dict[str, dict[str, Any]] = {}
+# Track result IDs that were cached/touched in the current request
+_current_request_result_ids: set[str] = set()
 
 
 def get_conversation_context(user_id: int) -> ConversationContext:
@@ -103,6 +105,8 @@ def cache_search_result(result_id: str, result_data: dict[str, Any]) -> None:
         result_data["magnet"] = ""
 
     _search_results_cache[result_id] = result_data
+    # Track this ID as touched in the current request (for card sending)
+    _current_request_result_ids.add(result_id)
     # Keep cache size reasonable
     if len(_search_results_cache) > 1000:
         # Remove oldest entries
@@ -3182,8 +3186,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         thinking_budget=thinking_budget,
     )
 
-    # Track search results added during this request
-    results_before = set(_search_results_cache.keys())
+    # Clear the set of result IDs touched in this request
+    _current_request_result_ids.clear()
 
     try:
         # Stream response to user
@@ -3200,21 +3204,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             response_length=len(response_text),
         )
 
-        # Check for new search results added during this request
-        results_after = set(_search_results_cache.keys())
-        new_result_ids = list(results_after - results_before)
+        # Check for search results touched during this request
+        # Using _current_request_result_ids ensures we show buttons even for cached results
+        touched_result_ids = list(_current_request_result_ids)
 
-        # Only show buttons if NEW search was performed in this request
-        # This prevents showing old buttons when context has changed
-        if new_result_ids:
+        # Only show buttons if search was performed in this request
+        if touched_result_ids:
             # Update context with current result IDs for potential re-use
-            conv_context.last_search_result_ids = new_result_ids[:10]
+            conv_context.last_search_result_ids = touched_result_ids[:10]
 
             # Send top-3 results as individual cards with action buttons
             await send_search_results_cards(
                 context.bot,
                 update.message.chat_id,
-                new_result_ids,
+                touched_result_ids,
                 max_results=3,
             )
 
