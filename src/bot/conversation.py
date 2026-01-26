@@ -243,6 +243,23 @@ async def handle_rutracker_search(
     quality = tool_input.get("quality")
     category = tool_input.get("category")
 
+    # Auto-apply user's quality preference if not specified by Claude
+    if not quality and telegram_id:
+        try:
+            async with get_storage() as storage:
+                db_user = await storage.get_user_by_telegram_id(telegram_id)
+                if db_user:
+                    prefs = await storage.get_preferences(db_user.id)
+                    if prefs and prefs.video_quality:
+                        quality = prefs.video_quality
+                        logger.info(
+                            "rutracker_auto_quality",
+                            quality=quality,
+                            telegram_id=telegram_id,
+                        )
+        except Exception as e:
+            logger.warning("rutracker_quality_lookup_failed", error=str(e))
+
     logger.info("rutracker_search", query=query, quality=quality, telegram_id=telegram_id)
 
     # Try TorAPI first (more reliable, no auth needed)
@@ -394,19 +411,40 @@ async def handle_rutracker_search(
         )
 
 
-async def handle_piratebay_search(tool_input: dict[str, Any]) -> str:
+async def handle_piratebay_search(
+    tool_input: dict[str, Any], telegram_id: int | None = None
+) -> str:
     """Handle piratebay_search tool call.
 
     Args:
         tool_input: Tool parameters (query, quality, min_seeds).
+        telegram_id: Telegram user ID for quality preferences.
 
     Returns:
         JSON string with search results.
     """
     query = tool_input.get("query", "")
+    quality = tool_input.get("quality")
     min_seeds = tool_input.get("min_seeds", 5)
 
-    logger.info("piratebay_search", query=query, min_seeds=min_seeds)
+    # Auto-apply user's quality preference if not specified by Claude
+    if not quality and telegram_id:
+        try:
+            async with get_storage() as storage:
+                db_user = await storage.get_user_by_telegram_id(telegram_id)
+                if db_user:
+                    prefs = await storage.get_preferences(db_user.id)
+                    if prefs and prefs.video_quality:
+                        quality = prefs.video_quality
+                        logger.info(
+                            "piratebay_auto_quality",
+                            quality=quality,
+                            telegram_id=telegram_id,
+                        )
+        except Exception as e:
+            logger.warning("piratebay_quality_lookup_failed", error=str(e))
+
+    logger.info("piratebay_search", query=query, quality=quality, min_seeds=min_seeds)
 
     try:
         async with PirateBayClient() as client:
@@ -827,7 +865,9 @@ async def handle_web_search(tool_input: dict[str, Any]) -> str:
             "yandex_search_not_configured",
             has_api_key=has_key,
             has_folder_id=has_folder,
-            folder_id_value=settings.yandex_search_folder_id[:10] if settings.yandex_search_folder_id else None,
+            folder_id_value=settings.yandex_search_folder_id[:10]
+            if settings.yandex_search_folder_id
+            else None,
         )
         return json.dumps(
             {"status": "error", "error": "Yandex Search API is not configured"},
@@ -2745,15 +2785,18 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
     """
     executor = ToolExecutor()
 
-    # Create wrapper for rutracker handler to pass telegram_id
+    # Create wrappers for handlers that need telegram_id
     async def rutracker_handler(tool_input: dict[str, Any]) -> str:
         return await handle_rutracker_search(tool_input, telegram_id=telegram_id)
+
+    async def piratebay_handler(tool_input: dict[str, Any]) -> str:
+        return await handle_piratebay_search(tool_input, telegram_id=telegram_id)
 
     executor.register_handlers(
         {
             # Core search tools
             "rutracker_search": rutracker_handler,
-            "piratebay_search": handle_piratebay_search,
+            "piratebay_search": piratebay_handler,
             "tmdb_search": handle_tmdb_search,
             "tmdb_person_search": handle_tmdb_person_search,
             "tmdb_batch_entity_search": handle_tmdb_batch_entity_search,
