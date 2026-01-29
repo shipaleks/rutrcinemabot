@@ -129,13 +129,21 @@ async def send_sync_notification(
         True if notification sent successfully
     """
     try:
-        message_parts = ["📦 Файл синхронизирован на NAS и готов к просмотру!"]
+        message_parts = ["✅ Скачано и готово к просмотру!"]
         if filename:
-            message_parts.append(f"\n📁 {filename}")
+            # Clean up filename for display
+            clean = filename.rsplit(".", 1)[0] if "." in filename else filename
+            clean = clean.replace(".", " ")
+            message_parts.append(f"\n🎬 {clean}")
         if local_path:
-            # Show just the folder, not full path
+            # Show just the destination folder
             folder = local_path.rsplit("/", 1)[-1] if "/" in local_path else local_path
-            message_parts.append(f"\n📂 {folder}")
+            if "Сериалы" in (local_path or ""):
+                message_parts.append(f"\n📂 Сериалы / {folder}")
+            elif "Кино" in (local_path or ""):
+                message_parts.append(f"\n📂 Кино / {folder}")
+            else:
+                message_parts.append(f"\n📂 {folder}")
 
         await bot.send_message(
             chat_id=telegram_id,

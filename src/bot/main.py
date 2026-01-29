@@ -258,16 +258,18 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
                 should_notify = result.get("notify")
                 if telegram_id or should_notify:
                     try:
-                        # If no specific telegram_id, notify bot owner
-                        if not telegram_id:
+                        # Notify specific user or all users
+                        notify_ids = []
+                        if telegram_id:
+                            notify_ids = [telegram_id]
+                        else:
                             async with get_storage() as storage:
                                 users = await storage.get_all_users()
-                                if users:
-                                    telegram_id = users[0].telegram_id
-                        if telegram_id:
+                                notify_ids = [u.telegram_id for u in users]
+                        for tid in notify_ids:
                             await send_sync_notification(
                                 _bot_instance,
-                                telegram_id,
+                                tid,
                                 filename=result.get("filename"),
                                 local_path=result.get("local_path"),
                             )
