@@ -69,11 +69,28 @@ User Message → Bot Module → Claude API (with tools) → ToolExecutor → Sea
 - `src/search/` — Torrent tracker clients (Rutracker, PirateBay)
 - `src/media/` — Metadata APIs (TMDB, Kinopoisk) with response caching
 - `src/seedbox/` — Torrent clients (Transmission, qBittorrent, Deluge)
+  - `client.py` — `SeedboxClient` base class (async context manager), `DelugeClient` etc.
 - `src/user/` — Storage and profile management
   - `storage.py` — Dual-backend (Postgres production, SQLite dev) with Fernet encryption
   - `profile.py` — Markdown-based user profiles for Claude context
 - `src/services/` — External integrations (Letterboxd export parser)
-- `src/monitoring/` — Background scheduler for release tracking
+- `src/monitoring/` — Background scheduler for release tracking and torrent monitoring
+  - `scheduler.py` — APScheduler jobs (release checks, torrent monitor, Deluge cleanup, follow-ups, push notifications)
+  - `torrent_monitor.py` — Checks Deluge every 60s for completed downloads, notifies users
+- `src/bot/seedbox_auth.py` — Per-user seedbox credentials conversation handler
+- `src/bot/sync_api.py` — Webhook endpoints for VM sync daemon
+
+### Seedbox Sync Flow
+
+```
+User downloads → Magnet sent to Deluge → hash tracked in synced_torrents (status: downloading)
+  → TorrentMonitor detects completion → status: seeding → push "Скачано! Копирую домой..."
+  → sets sync_needed flag → VM daemon polls GET /api/sync/pending
+  → rsync from seedbox to NAS → sorts into Кино/Сериалы → POST /api/sync/complete
+  → push "✅ Готово к просмотру!" → daily cleanup removes completed torrents from Deluge
+```
+
+Key: all seedbox clients (`DelugeClient` etc.) must be used as `async with` context managers.
 
 ### Storage Pattern
 
@@ -101,12 +118,16 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
 - `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `TMDB_API_KEY`, `KINOPOISK_API_TOKEN`, `ENCRYPTION_KEY`
 - `DATABASE_URL` — Postgres connection string (required for production persistence)
-- Optional: `SEEDBOX_HOST`, `SEEDBOX_USER`, `SEEDBOX_PASSWORD`
+- Optional: `SEEDBOX_HOST`, `SEEDBOX_USER`, `SEEDBOX_PASSWORD` (global fallback; users can set their own via `/seedbox`)
 - Optional: `RUTRACKER_USERNAME`, `RUTRACKER_PASSWORD` (global fallback)
+- Optional: `SYNC_API_KEY` — shared secret for VM sync daemon API
 
 ## Deployment
 
-Koyeb with Docker. Two ports: 8000 (webhook), 8080 (health check).
+Koyeb with Docker. Two ports: 8000 (webhook), 8080 (health check + sync API).
 Webhook URL: `https://<app-name>.koyeb.app/webhook`
+Koyeb strips `/api` prefix when routing to port 8080 — handlers accept both `/api/sync/*` and `/sync/*`.
 
 Without `DATABASE_URL`, data is lost on redeploy (SQLite in ephemeral container).
+
+VM sync daemon runs on Freebox VM (`scripts/sync_daemon.sh`) as a systemd service, polling the bot's `/api/sync/pending` endpoint.
