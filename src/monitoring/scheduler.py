@@ -60,6 +60,7 @@ NEWS_CHECK_INTERVAL_HOURS = 24  # Check news once per day
 
 # Torrent monitor settings
 TORRENT_CHECK_INTERVAL_SECONDS = 60  # Check Deluge every 60 seconds
+DELUGE_CLEANUP_INTERVAL_HOURS = 24  # Clean completed torrents from Deluge daily
 
 # TMDB enrichment settings
 TMDB_ENRICHMENT_INTERVAL_HOURS = 1  # Enrich watched items every hour
@@ -177,6 +178,16 @@ class MonitoringScheduler:
             trigger=IntervalTrigger(seconds=TORRENT_CHECK_INTERVAL_SECONDS),
             id="torrent_monitor",
             name="Torrent Download Monitor",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+        # Add daily Deluge cleanup job
+        self._scheduler.add_job(
+            self._torrent_monitor.cleanup_completed_torrents,
+            trigger=IntervalTrigger(hours=DELUGE_CLEANUP_INTERVAL_HOURS),
+            id="deluge_cleanup",
+            name="Deluge Completed Torrents Cleanup",
             replace_existing=True,
             max_instances=1,
         )
