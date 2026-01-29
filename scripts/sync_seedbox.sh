@@ -112,6 +112,11 @@ sshpass -p "$SEEDBOX_PASS" ssh $SSH_OPTS "$SEEDBOX_USER@$SEEDBOX_HOST" \
 # 2. Sort new video files into Кино / Сериалы
 #    - Extract clean series name to group episodes together
 #    - Move (not copy) from staging
+# Collect sorted files for a single summary notification
+SORTED_COUNT=0
+LAST_DEST=""
+LAST_CLEAN_NAME=""
+
 find "$NAS_STAGING" -type f \( -name "*.mkv" -o -name "*.mp4" -o -name "*.avi" -o -name "*.mov" \) | while IFS= read -r file; do
     # Skip if already processed
     if grep -qFx "$file" "$MANIFEST" 2>/dev/null; then
@@ -138,14 +143,12 @@ find "$NAS_STAGING" -type f \( -name "*.mkv" -o -name "*.mp4" -o -name "*.avi" -
     fi
 
     if [[ "$is_tv" == "true" ]]; then
-        # Extract clean series name for folder grouping
         clean_name=$(extract_series_name "$torrent_folder")
         if [[ -z "$clean_name" ]]; then
             clean_name="$torrent_folder"
         fi
         dest="$NAS_TV/$clean_name"
     else
-        # For movies, extract clean name
         clean_name=$(extract_series_name "$torrent_folder")
         if [[ -z "$clean_name" ]]; then
             clean_name="$torrent_folder"
@@ -157,14 +160,9 @@ find "$NAS_STAGING" -type f \( -name "*.mkv" -o -name "*.mp4" -o -name "*.avi" -
     mv "$file" "$dest/" 2>> "$LOG_FILE" && {
         echo "$file" >> "$MANIFEST"
         log "Sorted: $filename -> $dest"
-
-        # Notify bot API
-        if [[ -n "${BOT_API_URL:-}" ]] && [[ -n "${SYNC_API_KEY:-}" ]]; then
-            curl -s -X POST "$BOT_API_URL/api/sync/complete" \
-                -H "X-API-Key: $SYNC_API_KEY" \
-                -H "Content-Type: application/json" \
-                -d "{\"filename\":\"$filename\",\"local_path\":\"$dest\"}" >> "$LOG_FILE" 2>&1 || true
-        fi
+        SORTED_COUNT=$((SORTED_COUNT + 1))
+        LAST_DEST="$dest"
+        LAST_CLEAN_NAME="$clean_name"
     } || {
         log "Failed to sort: $filename"
     }
@@ -173,4 +171,18 @@ done
 # Clean up empty directories in staging
 find "$NAS_STAGING" -type d -empty -delete 2>/dev/null || true
 
-log "Sync completed successfully"
+# Send ONE summary notification (not per-file)
+if [[ "$SORTED_COUNT" -gt 0 ]] && [[ -n "${BOT_API_URL:-}" ]] && [[ -n "${SYNC_API_KEY:-}" ]]; then
+    if [[ "$SORTED_COUNT" -eq 1 ]]; then
+        notify_name="$LAST_CLEAN_NAME"
+    else
+        notify_name="$LAST_CLEAN_NAME ($SORTED_COUNT файлов)"
+    fi
+    curl -s -X POST "$BOT_API_URL/api/sync/complete" \
+        -H "X-API-Key: $SYNC_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"filename\":\"$notify_name\",\"local_path\":\"$LAST_DEST\"}" >> "$LOG_FILE" 2>&1 || true
+    log "Notification sent: $notify_name"
+fi
+
+log "Sync completed successfully (sorted $SORTED_COUNT files)"
