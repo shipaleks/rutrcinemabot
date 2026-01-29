@@ -377,14 +377,6 @@ class MonitoringScheduler:
                         "torrent_title": release.torrent_title,
                     }
 
-                    # Update monitor status with found_data
-                    await storage.update_monitor_status(
-                        release.monitor_id,
-                        status="found",
-                        found_at=datetime.now(UTC),
-                        found_data=found_data,
-                    )
-
                     # Auto-create next episode monitor for episode tracking mode
                     next_monitor_id = None
                     if (
@@ -397,8 +389,28 @@ class MonitoringScheduler:
                     # Get user's telegram_id for notification
                     user = await storage.get_user(release.user_id)
                     if user:
-                        # Send notification with info about next episode if created
-                        await self._notify_user(user.telegram_id, release, monitor, next_monitor_id)
+                        # Send notification BEFORE updating status to "found"
+                        # so that if notification fails, the monitor stays active
+                        # and will be retried on next check
+                        notified = await self._notify_user(
+                            user.telegram_id, release, monitor, next_monitor_id
+                        )
+
+                        if not notified:
+                            logger.warning(
+                                "skipping_status_update_notification_failed",
+                                monitor_id=release.monitor_id,
+                                title=release.title,
+                            )
+                            continue
+
+                        # Only mark as "found" after successful notification
+                        await storage.update_monitor_status(
+                            release.monitor_id,
+                            status="found",
+                            found_at=datetime.now(UTC),
+                            found_data=found_data,
+                        )
 
                         # Auto-download if enabled
                         if monitor.auto_download:
@@ -616,13 +628,28 @@ class MonitoringScheduler:
             )
             return None
 
+    @staticmethod
+    def _escape_markdown(text: str) -> str:
+        """Escape Telegram Markdown special characters.
+
+        Args:
+            text: Text to escape
+
+        Returns:
+            Escaped text safe for Markdown parse mode
+        """
+        # Telegram Markdown v1 special chars: _ * ` [
+        for char in ("_", "*", "`", "["):
+            text = text.replace(char, f"\\{char}")
+        return text
+
     async def _notify_user(
         self,
         telegram_id: int,
         release: FoundRelease,
         monitor: Monitor | None = None,
         next_monitor_id: int | None = None,
-    ) -> None:
+    ) -> bool:
         """Send Telegram notification about found release.
 
         Args:
@@ -630,6 +657,9 @@ class MonitoringScheduler:
             release: Found release information
             monitor: Original monitor (for episode info)
             next_monitor_id: ID of auto-created next episode monitor
+
+        Returns:
+            True if notification was sent successfully
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -643,11 +673,16 @@ class MonitoringScheduler:
         ):
             episode_info = f" S{monitor.season_number:02d}E{monitor.episode_number:02d}"
 
+        # Escape special Markdown characters in dynamic content
+        safe_title = self._escape_markdown(release.title)
+        safe_quality = self._escape_markdown(release.quality)
+        safe_source = self._escape_markdown(release.source.title())
+
         # Format notification message
         message = (
-            f"🎬 **{release.title}{episode_info}** — доступен!\n\n"
-            f"📊 {release.quality} | {release.size} | {release.seeds} сидов\n"
-            f"📡 Источник: {release.source.title()}"
+            f"🎬 *{safe_title}{episode_info}* — доступен!\n\n"
+            f"📊 {safe_quality} | {release.size} | {release.seeds} сидов\n"
+            f"📡 Источник: {safe_source}"
         )
 
         # Add next episode info
@@ -704,12 +739,45 @@ class MonitoringScheduler:
                 title=release.title,
                 next_episode_created=next_monitor_id is not None,
             )
+            return True
+        except Exception as e:
+            logger.warning(
+                "monitoring_notification_markdown_failed",
+                telegram_id=telegram_id,
+                error=str(e),
+            )
+
+        # Fallback: send without Markdown formatting
+        try:
+            plain_message = (
+                f"🎬 {release.title}{episode_info} — доступен!\n\n"
+                f"📊 {release.quality} | {release.size} | {release.seeds} сидов\n"
+                f"📡 Источник: {release.source.title()}"
+            )
+            if next_monitor_id and monitor and monitor.episode_number:
+                next_ep = monitor.episode_number + 1
+                plain_message += (
+                    f"\n\n⏭️ Мониторинг следующего эпизода (E{next_ep:02d}) создан автоматически"
+                )
+
+            await self._bot.send_message(
+                chat_id=telegram_id,
+                text=plain_message,
+                reply_markup=keyboard,
+            )
+            logger.info(
+                "monitoring_notification_sent_plain",
+                telegram_id=telegram_id,
+                title=release.title,
+            )
+            return True
         except Exception as e:
             logger.error(
                 "monitoring_notification_failed",
                 telegram_id=telegram_id,
                 error=str(e),
             )
+            return False
 
     async def _check_pending_followups(self) -> None:
         """Check for downloads that need follow-up and send notifications.
@@ -746,7 +814,10 @@ class MonitoringScheduler:
                         elif download.season:
                             title += f" S{download.season:02d}"
 
-                        message = f"🎬 Ты скачал **{title}** несколько дней назад.\n\nПонравилось?"
+                        safe_title = self._escape_markdown(title)
+                        message = (
+                            f"🎬 Ты скачал *{safe_title}* несколько дней назад.\n\nПонравилось?"
+                        )
 
                         # Create inline keyboard
                         buttons = [
@@ -769,13 +840,20 @@ class MonitoringScheduler:
                         ]
                         keyboard = InlineKeyboardMarkup(buttons)
 
-                        # Send the message
-                        await self._bot.send_message(
-                            chat_id=user.telegram_id,
-                            text=message,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard,
-                        )
+                        # Send the message with Markdown fallback
+                        try:
+                            await self._bot.send_message(
+                                chat_id=user.telegram_id,
+                                text=message,
+                                parse_mode="Markdown",
+                                reply_markup=keyboard,
+                            )
+                        except Exception:
+                            await self._bot.send_message(
+                                chat_id=user.telegram_id,
+                                text=f"🎬 Ты скачал {title} несколько дней назад.\n\nПонравилось?",
+                                reply_markup=keyboard,
+                            )
 
                         # Mark as sent
                         await storage.mark_followup_sent(download.id)
@@ -1187,12 +1265,21 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
                         # Format and send the push
                         message, keyboard = self._format_push_message(push)
 
-                        await self._bot.send_message(
-                            chat_id=user.telegram_id,
-                            text=message,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard,
-                        )
+                        try:
+                            await self._bot.send_message(
+                                chat_id=user.telegram_id,
+                                text=message,
+                                parse_mode="Markdown",
+                                reply_markup=keyboard,
+                            )
+                        except Exception:
+                            # Fallback: send without Markdown
+                            plain_message = message.replace("*", "").replace("_", "")
+                            await self._bot.send_message(
+                                chat_id=user.telegram_id,
+                                text=plain_message,
+                                reply_markup=keyboard,
+                            )
 
                         # Mark as sent
                         await storage.mark_push_sent(push.id)
@@ -1238,9 +1325,11 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
         content = push.content
         buttons = []
 
+        esc = self._escape_markdown
+
         if push.push_type == "followup":
             title = content.get("title", "")
-            message = f"🎬 Ты скачал **{title}** несколько дней назад.\n\nПонравилось?"
+            message = f"🎬 Ты скачал *{esc(title)}* несколько дней назад.\n\nПонравилось?"
             buttons = [
                 [
                     InlineKeyboardButton("👍 Да", callback_data=f"followup_yes_{push.id}"),
@@ -1253,8 +1342,8 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
             movie = content.get("movie_title", "")
             release_date = content.get("release_date", "")
             message = (
-                f"🎬 Твой любимый режиссёр **{director}** снимает новый фильм!\n\n"
-                f"📽️ **{movie}**\n"
+                f"🎬 Твой любимый режиссёр *{esc(director)}* снимает новый фильм!\n\n"
+                f"📽️ *{esc(movie)}*\n"
                 f"📅 Дата выхода: {release_date}"
             )
             movie_id = content.get("movie_id")
@@ -1277,7 +1366,7 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
             title = content.get("title", "")
             year = content.get("year", "")
             reason = content.get("reason", "")
-            message = f"💎 **Hidden Gem для тебя!**\n\n📽️ **{title}** ({year})\n\n_{reason}_"
+            message = f"💎 *Hidden Gem для тебя!*\n\n📽️ *{esc(title)}* ({year})\n\n_{esc(reason)}_"
             buttons = [
                 [
                     InlineKeyboardButton("🔍 Найти", callback_data=f"push_search_{title[:30]}"),
@@ -1295,7 +1384,7 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
         elif push.push_type == "news":
             headline = content.get("headline", "")
             source = content.get("source", "")
-            message = f"📰 **Новость из мира кино**\n\n{headline}\n\n_Источник: {source}_"
+            message = f"📰 *Новость из мира кино*\n\n{esc(headline)}\n\n_Источник: {esc(source)}_"
             buttons = [
                 [
                     InlineKeyboardButton(
