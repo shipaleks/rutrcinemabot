@@ -272,7 +272,7 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # Add TMDB enrichment for watched items - every hour, run immediately on start
+        # Add TMDB enrichment for watched items - every hour
         self._scheduler.add_job(
             self._enrich_watched_tmdb,
             trigger=IntervalTrigger(hours=TMDB_ENRICHMENT_INTERVAL_HOURS),
@@ -280,7 +280,6 @@ class MonitoringScheduler:
             name="TMDB Watched Items Enrichment",
             replace_existing=True,
             max_instances=1,
-            next_run_time=datetime.now(UTC),  # Run immediately
         )
 
         self._scheduler.start()
@@ -1352,6 +1351,7 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
 
                             if not results:
                                 failed += 1
+                                await storage.mark_tmdb_enrichment_failed(item.id)
                                 continue
 
                             # Get the best match
@@ -1360,6 +1360,7 @@ If you can't find a good match, return {{"error": "No suitable film found"}}"""
 
                             if not tmdb_id:
                                 failed += 1
+                                await storage.mark_tmdb_enrichment_failed(item.id)
                                 continue
 
                             # Get director info for movies

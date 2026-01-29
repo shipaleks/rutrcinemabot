@@ -712,6 +712,14 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
+    async def mark_tmdb_enrichment_failed(
+        self,
+        watched_id: int,
+    ) -> None:
+        """Mark a watched item as failed for TMDB enrichment."""
+        pass
+
+    @abstractmethod
     async def update_watched_tmdb_data(
         self,
         watched_id: int,
@@ -1616,6 +1624,10 @@ class SQLiteStorage(BaseStorage):
             CREATE INDEX IF NOT EXISTS idx_synced_torrents_hash ON synced_torrents(torrent_hash);
             CREATE INDEX IF NOT EXISTS idx_synced_torrents_status ON synced_torrents(status);
             """,
+            # Migration 22: Add tmdb_enrichment_failed to watched table
+            """
+            ALTER TABLE watched ADD COLUMN tmdb_enrichment_failed BOOLEAN DEFAULT FALSE;
+            """,
         ]
 
         # Get current migration version
@@ -2213,6 +2225,7 @@ class SQLiteStorage(BaseStorage):
             """
             SELECT * FROM watched
             WHERE tmdb_id IS NULL AND title IS NOT NULL
+            AND (tmdb_enrichment_failed IS NULL OR tmdb_enrichment_failed = FALSE)
             ORDER BY watched_at DESC
             LIMIT ?
             """,
@@ -2220,6 +2233,14 @@ class SQLiteStorage(BaseStorage):
         )
         rows = await cursor.fetchall()
         return [self._row_to_watched(row) for row in rows]
+
+    async def mark_tmdb_enrichment_failed(self, watched_id: int) -> None:
+        """Mark a watched item as failed for TMDB enrichment."""
+        await self.db.execute(
+            "UPDATE watched SET tmdb_enrichment_failed = TRUE WHERE id = ?",
+            (watched_id,),
+        )
+        await self.db.commit()
 
     async def update_watched_tmdb_data(
         self,
@@ -4019,6 +4040,10 @@ class PostgresStorage(BaseStorage):
             CREATE INDEX IF NOT EXISTS idx_synced_torrents_hash ON synced_torrents(torrent_hash);
             CREATE INDEX IF NOT EXISTS idx_synced_torrents_status ON synced_torrents(status);
             """,
+            # Migration 22: Add tmdb_enrichment_failed to watched table
+            """
+            ALTER TABLE watched ADD COLUMN IF NOT EXISTS tmdb_enrichment_failed BOOLEAN DEFAULT FALSE;
+            """,
         ]
 
         async with self.pool.acquire() as conn:
@@ -4599,12 +4624,21 @@ class PostgresStorage(BaseStorage):
                 """
                 SELECT * FROM watched
                 WHERE tmdb_id IS NULL AND title IS NOT NULL
+                AND (tmdb_enrichment_failed IS NULL OR tmdb_enrichment_failed = FALSE)
                 ORDER BY watched_at DESC
                 LIMIT $1
                 """,
                 limit,
             )
         return [self._row_to_watched(row) for row in rows]
+
+    async def mark_tmdb_enrichment_failed(self, watched_id: int) -> None:
+        """Mark a watched item as failed for TMDB enrichment."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE watched SET tmdb_enrichment_failed = TRUE WHERE id = $1",
+                watched_id,
+            )
 
     async def update_watched_tmdb_data(
         self,
