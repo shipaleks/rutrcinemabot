@@ -87,11 +87,11 @@ class TorrentMonitor:
                 username = str(settings.seedbox_user or "")
                 password = settings.seedbox_password.get_secret_value()
 
-            client = DelugeClient(host=host, username=username or "", password=password)
-            await client.authenticate()
-
-            for torrent in torrents:
-                await self._check_single_torrent(client, torrent, user)
+            async with DelugeClient(
+                host=host, username=username or "", password=password
+            ) as client:
+                for torrent in torrents:
+                    await self._check_single_torrent(client, torrent, user)
 
         except Exception as e:
             logger.warning(
