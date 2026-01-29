@@ -40,15 +40,19 @@ from src.bot.onboarding import (
 )
 from src.bot.rutracker_auth import get_rutracker_conversation_handler
 from src.bot.seedbox_auth import get_seedbox_conversation_handler
-from src.bot.sync_api import handle_sync_complete_request
+from src.bot.sync_api import handle_sync_complete_request, send_sync_notification
 from src.config import settings
 from src.logger import get_logger
 from src.monitoring import MonitoringScheduler
+from src.user.storage import get_storage
 
 logger = get_logger(__name__)
 
 # Global flag to track bot health
 _bot_healthy = False
+
+# Global bot instance for sync notifications
+_bot_instance = None
 
 # Global monitoring scheduler instance
 _monitoring_scheduler: MonitoringScheduler | None = None
@@ -248,11 +252,27 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
             api_key = headers.get("x-api-key")
             result, status_code = await handle_sync_complete_request(request_body, api_key)
 
-            # If we got a telegram_id, send notification
-            if result.get("telegram_id") and _bot_healthy:
-                # Get bot instance from running application
-                # We'll need to pass bot reference somehow
-                pass  # Notification handled by caller or separate mechanism
+            # Send notification if we have a target
+            if _bot_healthy and _bot_instance:
+                telegram_id = result.get("telegram_id")
+                should_notify = result.get("notify")
+                if telegram_id or should_notify:
+                    try:
+                        # If no specific telegram_id, notify bot owner
+                        if not telegram_id:
+                            async with get_storage() as storage:
+                                users = await storage.get_all_users()
+                                if users:
+                                    telegram_id = users[0].telegram_id
+                        if telegram_id:
+                            await send_sync_notification(
+                                _bot_instance,
+                                telegram_id,
+                                filename=result.get("filename"),
+                                local_path=result.get("local_path"),
+                            )
+                    except Exception as e:
+                        logger.error("sync_notification_error", error=str(e))
 
             body = json.dumps(result, ensure_ascii=False)
             status_text = "OK" if status_code == 200 else "Error"
@@ -354,8 +374,10 @@ async def run_webhook(application: Application) -> None:
     _monitoring_scheduler = MonitoringScheduler(application.bot)
     _monitoring_scheduler.start()
 
-    # Mark bot as healthy now that everything is started
+    # Mark bot as healthy and store bot instance for sync notifications
     _bot_healthy = True
+    global _bot_instance
+    _bot_instance = application.bot
 
     logger.info(
         "bot_started_webhook",
