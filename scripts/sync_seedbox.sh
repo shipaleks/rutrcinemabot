@@ -117,7 +117,7 @@ SORTED_COUNT=0
 LAST_DEST=""
 LAST_CLEAN_NAME=""
 
-find "$NAS_STAGING" -type f \( -name "*.mkv" -o -name "*.mp4" -o -name "*.avi" -o -name "*.mov" \) | while IFS= read -r file; do
+while IFS= read -r file; do
     # Skip if already processed
     if grep -qFx "$file" "$MANIFEST" 2>/dev/null; then
         continue
@@ -166,7 +166,7 @@ find "$NAS_STAGING" -type f \( -name "*.mkv" -o -name "*.mp4" -o -name "*.avi" -
     } || {
         log "Failed to sort: $filename"
     }
-done
+done < <(find "$NAS_STAGING" -type f \( -name "*.mkv" -o -name "*.mp4" -o -name "*.avi" -o -name "*.mov" \))
 
 # Clean up empty directories in staging
 find "$NAS_STAGING" -type d -empty -delete 2>/dev/null || true
