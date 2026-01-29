@@ -96,8 +96,15 @@ async def handle_sync_complete_request(
                     return {"ok": True, "message": "Sync recorded"}, 200
                 logger.warning("sync_torrent_not_found", torrent_hash=torrent_hash)
                 return {"ok": False, "message": "Torrent not found"}, 404
-            # No hash provided, just log
-            return {"ok": True, "message": "Sync noted (no hash)"}, 200
+            # No hash — still return filename/path for notification
+            # The caller (main.py) will broadcast to bot owner
+            return {
+                "ok": True,
+                "filename": filename,
+                "local_path": local_path,
+                "notify": True,
+                "message": "Sync noted",
+            }, 200
 
     except Exception as e:
         logger.exception("sync_api_error", error=str(e))
