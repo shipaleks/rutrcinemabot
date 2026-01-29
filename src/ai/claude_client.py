@@ -12,7 +12,7 @@ from typing import Any
 import anthropic
 import structlog
 
-from src.ai.prompts import get_system_prompt
+from src.ai.prompts import get_system_prompt_blocks
 from src.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -32,6 +32,29 @@ def _dump_content_blocks(blocks: list[Any]) -> list[dict[str, Any]]:
         for key in _EXCLUDED_BLOCK_FIELDS:
             d.pop(key, None)
         result.append(d)
+    return result
+
+
+def _add_cache_control_to_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add cache_control to the last tool definition for prompt caching.
+
+    Anthropic's prompt caching caches everything up to and including the
+    block marked with cache_control. By marking the last tool, we cache
+    all tool definitions (which are static across requests).
+
+    Args:
+        tools: List of tool definitions.
+
+    Returns:
+        New list with cache_control on the last element.
+    """
+    if not tools:
+        return tools
+    # Shallow-copy the list; deep-copy only the last element to add cache_control
+    result = list(tools)
+    last = dict(result[-1])
+    last["cache_control"] = {"type": "ephemeral"}
+    result[-1] = last
     return result
 
 
@@ -82,6 +105,47 @@ class ToolResult:
     is_error: bool = False
 
 
+def _estimate_tokens(content: str | list[dict[str, Any]]) -> int:
+    """Estimate token count for a message content.
+
+    Uses a rough heuristic of ~4 characters per token for text.
+    For structured content blocks, sums up text and JSON representations.
+
+    Args:
+        content: Message content (text string or list of content blocks).
+
+    Returns:
+        Estimated token count.
+    """
+    if isinstance(content, str):
+        return len(content) // 4 + 1
+
+    total = 0
+    for block in content:
+        if isinstance(block, dict):
+            block_type = block.get("type", "")
+            if block_type == "text":
+                total += len(block.get("text", "")) // 4 + 1
+            elif block_type == "tool_use":
+                # tool name + JSON input
+                total += 20  # overhead
+                inp = block.get("input", {})
+                total += len(json.dumps(inp, ensure_ascii=False)) // 4
+            elif block_type == "tool_result":
+                result_content = block.get("content", "")
+                if isinstance(result_content, str):
+                    total += len(result_content) // 4 + 1
+                else:
+                    total += len(json.dumps(result_content, ensure_ascii=False)) // 4
+            elif block_type in ("thinking", "redacted_thinking"):
+                total += len(block.get("thinking", "")) // 4
+            else:
+                total += len(json.dumps(block, ensure_ascii=False)) // 4
+        else:
+            total += 10  # fallback
+    return max(total, 1)
+
+
 @dataclass
 class ConversationContext:
     """Manages conversation history and context.
@@ -92,7 +156,9 @@ class ConversationContext:
         user_profile_md: Full markdown profile for Claude's context (legacy)
         core_memory_content: Rendered core memory blocks (new MemGPT-style)
         telegram_user_id: Telegram user ID for tool calls
-        max_history: Maximum number of messages to keep
+        max_history: Maximum number of messages to keep (safety cap)
+        max_context_tokens: Approximate max tokens for conversation history
+        context_loaded: Whether user profile/memory has been loaded from DB
     """
 
     messages: list[Message] = field(default_factory=list)
@@ -101,8 +167,10 @@ class ConversationContext:
     core_memory_content: str | None = None
     telegram_user_id: int | None = None
     remember_requested: bool = False  # User explicitly asked to save (#запомни)
-    max_history: int = 20
+    max_history: int = 30  # Safety cap on message count
+    max_context_tokens: int = 80_000  # Token budget for conversation history
     last_search_result_ids: list[str] = field(default_factory=list)  # For re-showing buttons
+    context_loaded: bool = False  # Whether profile/memory loaded from DB
 
     def add_message(self, role: str, content: str | list[dict[str, Any]]) -> None:
         """Add a message to the conversation history.
@@ -112,34 +180,83 @@ class ConversationContext:
             content: The message content
         """
         self.messages.append(Message(role=role, content=content))
-
-        # Trim history if too long
-        if len(self.messages) > self.max_history:
-            self._trim_history()
+        self._trim_history()
 
     def _trim_history(self) -> None:
-        """Trim history while preserving tool_use/tool_result pairs.
+        """Trim history by token budget, then by message count.
+
+        Uses token-aware trimming: estimates total tokens in history and
+        removes oldest messages (preferring to drop tool-heavy exchanges)
+        until under budget. Also enforces a hard message count cap.
 
         Claude API requires every tool_result to have a corresponding tool_use
-        in the previous message. Simple slicing can break this invariant.
+        in the previous message, so we always trim in pairs.
         """
-        if len(self.messages) <= self.max_history:
+        # Phase 1: trim by token budget
+        self._trim_by_tokens()
+
+        # Phase 2: trim by message count (safety cap)
+        if len(self.messages) > self.max_history:
+            start_idx = len(self.messages) - self.max_history
+            # Ensure we don't break tool_use/tool_result pairs
+            start_idx = self._safe_trim_index(start_idx)
+            self.messages = self.messages[start_idx:]
+
+    def _trim_by_tokens(self) -> None:
+        """Remove oldest messages until total history is under token budget."""
+        total_tokens = sum(_estimate_tokens(msg.content) for msg in self.messages)
+
+        if total_tokens <= self.max_context_tokens:
             return
 
-        # Start with simple slice
-        start_idx = len(self.messages) - self.max_history
+        logger.info(
+            "trimming_history_by_tokens",
+            total_tokens=total_tokens,
+            budget=self.max_context_tokens,
+            message_count=len(self.messages),
+        )
 
-        # Check if first message after trim starts with tool_result
-        # If so, we need to include the preceding assistant message with tool_use
+        # Remove messages from the front until under budget
+        while len(self.messages) > 2 and total_tokens > self.max_context_tokens:
+            # Calculate how many messages to skip from the front
+            removed = self.messages.pop(0)
+            total_tokens -= _estimate_tokens(removed.content)
+
+            # If we just removed an assistant message with tool_use, the next
+            # message might be a tool_result which is now orphaned — remove it too
+            if (
+                self.messages
+                and self.messages[0].role == "user"
+                and self._has_tool_result(self.messages[0].content)
+            ):
+                removed2 = self.messages.pop(0)
+                total_tokens -= _estimate_tokens(removed2.content)
+
+            # If we removed a tool_result (user msg), the preceding assistant
+            # tool_use is already gone, but check the new first message
+            if (
+                self.messages
+                and self.messages[0].role == "user"
+                and self._has_tool_result(self.messages[0].content)
+            ):
+                removed3 = self.messages.pop(0)
+                total_tokens -= _estimate_tokens(removed3.content)
+
+        logger.info(
+            "history_trimmed_by_tokens",
+            new_total_tokens=total_tokens,
+            new_message_count=len(self.messages),
+        )
+
+    def _safe_trim_index(self, start_idx: int) -> int:
+        """Find a safe trim index that doesn't break tool_use/tool_result pairs."""
         while start_idx > 0:
             first_msg = self.messages[start_idx]
             if first_msg.role == "user" and self._has_tool_result(first_msg.content):
-                # Need to include the assistant message before this
                 start_idx -= 1
             else:
                 break
-
-        self.messages = self.messages[start_idx:]
+        return start_idx
 
     def _has_tool_result(self, content: str | list[dict[str, Any]]) -> bool:
         """Check if message content contains tool_result blocks."""
@@ -266,8 +383,8 @@ class ClaudeClient:
         # Add user message to context
         context.add_message("user", user_message)
 
-        # Get system prompt with user preferences and profile
-        system_prompt = get_system_prompt(
+        # Get system prompt as content blocks with cache_control for prompt caching
+        system_blocks = get_system_prompt_blocks(
             user_preferences=context.user_preferences,
             user_profile_md=context.user_profile_md,
             core_memory_content=context.core_memory_content,
@@ -283,17 +400,17 @@ class ClaudeClient:
             )
             effective_thinking_budget = 0
 
-        # Prepare API call parameters
+        # Prepare API call parameters with prompt caching
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "system": system_prompt,
+            "system": system_blocks,
             "messages": context.get_messages_for_api(),
         }
 
-        # Add tools if available
+        # Add tools with cache_control on last element for prompt caching
         if self.tools:
-            params["tools"] = self.tools
+            params["tools"] = _add_cache_control_to_tools(self.tools)
 
         # Add extended thinking if enabled and history is compatible
         if effective_thinking_budget > 0:
@@ -511,8 +628,8 @@ class ClaudeClient:
         # Add user message to context
         context.add_message("user", user_message)
 
-        # Get system prompt with user preferences and profile
-        system_prompt = get_system_prompt(
+        # Get system prompt as content blocks with cache_control for prompt caching
+        system_blocks = get_system_prompt_blocks(
             user_preferences=context.user_preferences,
             user_profile_md=context.user_profile_md,
             core_memory_content=context.core_memory_content,
@@ -528,17 +645,17 @@ class ClaudeClient:
             )
             effective_thinking_budget = 0
 
-        # Prepare API call parameters
+        # Prepare API call parameters with prompt caching
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "system": system_prompt,
+            "system": system_blocks,
             "messages": context.get_messages_for_api(),
         }
 
-        # Add tools if available
+        # Add tools with cache_control on last element for prompt caching
         if self.tools:
-            params["tools"] = self.tools
+            params["tools"] = _add_cache_control_to_tools(self.tools)
 
         # Add extended thinking if enabled and history is compatible
         if effective_thinking_budget > 0:

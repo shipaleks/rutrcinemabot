@@ -14,6 +14,147 @@ The prompt defines:
 from typing import Any
 
 # =============================================================================
+# System prompt content block helpers for Anthropic prompt caching
+# =============================================================================
+
+
+def get_system_prompt_blocks(
+    user_preferences: dict[str, Any] | None = None,
+    user_profile_md: str | None = None,
+    blocklist_items: list[dict[str, str]] | None = None,
+    core_memory_content: str | None = None,
+    remember_requested: bool = False,
+) -> list[dict[str, Any]]:
+    """Get the system prompt as content blocks with cache_control markers.
+
+    The static base prompt (which is the same for all users and all messages)
+    is returned as a separate block with cache_control=ephemeral, so that
+    Anthropic's prompt caching can reuse it across requests (5-min TTL).
+
+    The dynamic user context (core memory, preferences, blocklist) is appended
+    as a second block WITHOUT cache_control, since it varies per user.
+
+    Args:
+        user_preferences: Dict with user's basic preferences
+        user_profile_md: Full markdown profile (legacy fallback)
+        blocklist_items: List of blocked items for strict filtering
+        core_memory_content: Rendered core memory blocks (new memory system)
+        remember_requested: User explicitly asked to save with #запомни
+
+    Returns:
+        List of system content blocks for the Anthropic API.
+    """
+    from datetime import datetime
+
+    # Static part: base prompt + current date (changes daily, but cached for 5 min)
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    static_text = MEDIA_CONCIERGE_SYSTEM_PROMPT + f"\n\n**Сегодняшняя дата: {current_date}**\n"
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": static_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+    # Dynamic part: user-specific context
+    dynamic_parts = _build_dynamic_context(
+        user_preferences=user_preferences,
+        user_profile_md=user_profile_md,
+        blocklist_items=blocklist_items,
+        core_memory_content=core_memory_content,
+        remember_requested=remember_requested,
+    )
+
+    if dynamic_parts:
+        blocks.append({"type": "text", "text": dynamic_parts})
+
+    return blocks
+
+
+def _build_dynamic_context(
+    user_preferences: dict[str, Any] | None = None,
+    user_profile_md: str | None = None,
+    blocklist_items: list[dict[str, str]] | None = None,
+    core_memory_content: str | None = None,
+    remember_requested: bool = False,
+) -> str:
+    """Build the dynamic user context string.
+
+    This is extracted so both get_system_prompt() and get_system_prompt_blocks()
+    share the same logic.
+    """
+    context_parts: list[str] = []
+
+    # Add remember instruction if requested
+    if remember_requested:
+        context_parts.append("\n\n---\n\n## ⚠️ ОБЯЗАТЕЛЬНОЕ СОХРАНЕНИЕ")
+        context_parts.append(
+            "Пользователь использовал команду #запомни. "
+            "ТЫ ОБЯЗАН сохранить следующую информацию в core memory "
+            "с помощью `update_core_memory`. Выбери подходящий блок "
+            "(preferences, watch_context, style, instructions, blocklist) "
+            "и сохрани информацию. Подтверди пользователю что запомнил."
+        )
+
+    # Add core memory blocks (new system - takes priority)
+    if core_memory_content:
+        context_parts.append("\n\n---\n\n")
+        context_parts.append(core_memory_content)
+
+    # Add user profile if available (legacy fallback)
+    elif user_profile_md:
+        context_parts.append("\n\n---\n\n## Профиль пользователя\n")
+        context_parts.append(user_profile_md)
+
+    # Add basic preferences if nothing else available
+    elif user_preferences:
+        context_parts.append("\n\n---\n\n## Базовые предпочтения пользователя:")
+
+        quality = user_preferences.get("quality") or user_preferences.get("preferred_quality")
+        if quality:
+            context_parts.append(f"- Качество видео: **{quality}**")
+
+        language = user_preferences.get("audio_language") or user_preferences.get(
+            "preferred_language"
+        )
+        if language:
+            lang_map = {
+                "ru": "русский дубляж",
+                "en": "английский",
+                "original": "оригинальная дорожка",
+            }
+            context_parts.append(f"- Язык аудио: **{lang_map.get(language, language)}**")
+
+        genres = user_preferences.get("genres") or user_preferences.get("favorite_genres")
+        if genres and isinstance(genres, list) and len(genres) > 0:
+            context_parts.append(f"- Любимые жанры: **{', '.join(genres)}**")
+
+        search_source = user_preferences.get("default_search_source")
+        if search_source and search_source != "auto":
+            source_map = {
+                "rutracker": "Rutracker (предпочитаем для русского контента)",
+                "piratebay": "PirateBay (предпочитаем для зарубежного контента)",
+            }
+            context_parts.append(
+                f"- Источник поиска: **{source_map.get(search_source, search_source)}**"
+            )
+
+    # Add blocklist warning if items exist
+    if blocklist_items and len(blocklist_items) > 0:
+        context_parts.append("\n\n## ⚠️ BLOCKLIST — НЕ РЕКОМЕНДОВАТЬ:")
+        for item in blocklist_items[:20]:  # Limit to 20 items
+            block_type = item.get("type", "unknown")
+            block_value = item.get("value", "")
+            level = item.get("level", "dont_recommend")
+            level_marker = "🚫" if level == "never_mention" else "⛔"
+            context_parts.append(f"- {level_marker} {block_type}: {block_value}")
+
+    return "".join(context_parts)
+
+
+# =============================================================================
 # Rich Bot Personality Prompt
 # =============================================================================
 
@@ -61,18 +202,13 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 8. **search_memory_notes** — Поиск по recall memory (заметки из прошлых разговоров).
 9. **create_memory_note** — Создание заметки для recall memory.
 
-### Профиль (Legacy)
-10. **read_user_profile** — Загрузить профиль пользователя (markdown).
-11. **update_user_profile** — Записать важную информацию о пользователе.
-12. **get_user_profile** — Базовые предпочтения (качество, язык, жанры).
-
 ### Watchlist и история
-9. **add_to_watchlist** — Добавить в "хочу посмотреть".
-10. **remove_from_watchlist** — Удалить из watchlist.
-11. **get_watchlist** — Показать watchlist.
-12. **mark_watched** — Отметить как просмотренное.
-13. **rate_content** — Поставить оценку.
-14. **get_watch_history** — История просмотров.
+10. **add_to_watchlist** — Добавить в "хочу посмотреть".
+11. **remove_from_watchlist** — Удалить из watchlist.
+12. **get_watchlist** — Показать watchlist.
+13. **mark_watched** — Отметить как просмотренное.
+14. **rate_content** — Поставить оценку.
+15. **get_watch_history** — История просмотров.
 
 ### Blocklist
 15. **add_to_blocklist** — Добавить в чёрный список.
@@ -138,12 +274,11 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 - Учитывай notes (например: "horror except psychological").
 - Уровни: "dont_recommend" = можно упомянуть, "never_mention" = не упоминать.
 
-### 5. Запись в профиль
-Записывай в профиль значимую информацию:
-- Новые предпочтения (смотрит с партнёром, конкретное оборудование).
-- Паттерны ("любит корейский хоррор", "не смотрит после 2010").
-- Memorable moments ("нашли тот фильм, который искал месяц").
-- Используй `update_user_profile` с section="notable_interactions" или "conversation_highlights".
+### 5. Запись важной информации
+Записывай значимую информацию через `update_core_memory` или `create_memory_note`:
+- Новые предпочтения (смотрит с партнёром, конкретное оборудование) → `update_core_memory`
+- Паттерны ("любит корейский хоррор", "не смотрит после 2010") → `create_memory_note`
+- Memorable moments ("нашли тот фильм, который искал месяц") → `create_memory_note`
 
 ## 🔍 Веб-поиск для актуальной информации
 
@@ -377,14 +512,15 @@ def get_system_prompt(
     core_memory_content: str | None = None,
     remember_requested: bool = False,
 ) -> str:
-    """Get the system prompt with optional user context.
+    """Get the system prompt with optional user context as a single string.
+
+    This is the legacy interface used by send_message(). For prompt caching
+    support, prefer get_system_prompt_blocks() which returns content blocks
+    with cache_control markers.
 
     Args:
-        user_preferences: Dict with user's basic preferences:
-            - quality: "1080p", "4K", "720p" etc.
-            - audio_language: "ru", "en", "original" etc.
-            - genres: list of preferred genres
-        user_profile_md: Full markdown profile (from read_user_profile tool) - LEGACY
+        user_preferences: Dict with user's basic preferences
+        user_profile_md: Full markdown profile (legacy fallback)
         blocklist_items: List of blocked items for strict filtering
         core_memory_content: Rendered core memory blocks (new memory system)
         remember_requested: User explicitly asked to save with #запомни
@@ -400,74 +536,16 @@ def get_system_prompt(
     current_date = datetime.now().strftime("%Y-%m-%d")
     prompt += f"\n\n**Сегодняшняя дата: {current_date}**\n"
 
-    context_parts: list[str] = []
+    dynamic = _build_dynamic_context(
+        user_preferences=user_preferences,
+        user_profile_md=user_profile_md,
+        blocklist_items=blocklist_items,
+        core_memory_content=core_memory_content,
+        remember_requested=remember_requested,
+    )
 
-    # Add remember instruction if requested
-    if remember_requested:
-        context_parts.append("\n\n---\n\n## ⚠️ ОБЯЗАТЕЛЬНОЕ СОХРАНЕНИЕ")
-        context_parts.append(
-            "Пользователь использовал команду #запомни. "
-            "ТЫ ОБЯЗАН сохранить следующую информацию в core memory "
-            "с помощью `update_core_memory`. Выбери подходящий блок "
-            "(preferences, watch_context, style, instructions, blocklist) "
-            "и сохрани информацию. Подтверди пользователю что запомнил."
-        )
-
-    # Add core memory blocks (new system - takes priority)
-    if core_memory_content:
-        context_parts.append("\n\n---\n\n")
-        context_parts.append(core_memory_content)
-
-    # Add user profile if available (legacy fallback)
-    elif user_profile_md:
-        context_parts.append("\n\n---\n\n## Профиль пользователя\n")
-        context_parts.append(user_profile_md)
-
-    # Add basic preferences if nothing else available
-    elif user_preferences:
-        context_parts.append("\n\n---\n\n## Базовые предпочтения пользователя:")
-
-        quality = user_preferences.get("quality") or user_preferences.get("preferred_quality")
-        if quality:
-            context_parts.append(f"- Качество видео: **{quality}**")
-
-        language = user_preferences.get("audio_language") or user_preferences.get(
-            "preferred_language"
-        )
-        if language:
-            lang_map = {
-                "ru": "русский дубляж",
-                "en": "английский",
-                "original": "оригинальная дорожка",
-            }
-            context_parts.append(f"- Язык аудио: **{lang_map.get(language, language)}**")
-
-        genres = user_preferences.get("genres") or user_preferences.get("favorite_genres")
-        if genres and isinstance(genres, list) and len(genres) > 0:
-            context_parts.append(f"- Любимые жанры: **{', '.join(genres)}**")
-
-        search_source = user_preferences.get("default_search_source")
-        if search_source and search_source != "auto":
-            source_map = {
-                "rutracker": "Rutracker (предпочитаем для русского контента)",
-                "piratebay": "PirateBay (предпочитаем для зарубежного контента)",
-            }
-            context_parts.append(
-                f"- Источник поиска: **{source_map.get(search_source, search_source)}**"
-            )
-
-    # Add blocklist warning if items exist
-    if blocklist_items and len(blocklist_items) > 0:
-        context_parts.append("\n\n## ⚠️ BLOCKLIST — НЕ РЕКОМЕНДОВАТЬ:")
-        for item in blocklist_items[:20]:  # Limit to 20 items
-            block_type = item.get("type", "unknown")
-            block_value = item.get("value", "")
-            level = item.get("level", "dont_recommend")
-            level_marker = "🚫" if level == "never_mention" else "⛔"
-            context_parts.append(f"- {level_marker} {block_type}: {block_value}")
-
-    if context_parts:
-        prompt += "".join(context_parts)
+    if dynamic:
+        prompt += dynamic
 
     return prompt
 

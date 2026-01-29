@@ -1057,11 +1057,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
     TMDB_TV_DETAILS_TOOL,
     TMDB_BATCH_ENTITY_SEARCH_TOOL,
     KINOPOISK_SEARCH_TOOL,
-    # User profile tools
-    GET_USER_PROFILE_TOOL,
-    READ_USER_PROFILE_TOOL,
-    UPDATE_USER_PROFILE_TOOL,
-    # Memory system tools
+    # Memory system tools (replaced legacy profile tools)
     READ_CORE_MEMORY_TOOL,
     UPDATE_CORE_MEMORY_TOOL,
     SEARCH_MEMORY_NOTES_TOOL,
@@ -1094,6 +1090,14 @@ ALL_TOOLS: list[dict[str, Any]] = [
     GET_DIRECTOR_UPCOMING_TOOL,
     # Web search for current information
     WEB_SEARCH_TOOL,
+]
+
+# Legacy profile tools kept for backward compatibility (handler registration)
+# but no longer sent to Claude API to reduce token usage.
+LEGACY_PROFILE_TOOLS: list[dict[str, Any]] = [
+    GET_USER_PROFILE_TOOL,
+    READ_USER_PROFILE_TOOL,
+    UPDATE_USER_PROFILE_TOOL,
 ]
 
 
