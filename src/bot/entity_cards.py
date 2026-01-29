@@ -52,9 +52,12 @@ async def format_person_card(person_id: int) -> tuple[str, str | None]:
     # For directors/writers/producers, prioritize crew work; for actors, prioritize cast
     if known_for in ("Directing", "Writing", "Production"):
         # Filter crew to main roles (Director, Writer, Producer, etc.)
-        main_crew = [w for w in crew_works if w.get("job") in (
-            "Director", "Writer", "Screenplay", "Producer", "Executive Producer"
-        )]
+        main_crew = [
+            w
+            for w in crew_works
+            if w.get("job")
+            in ("Director", "Writer", "Screenplay", "Producer", "Executive Producer")
+        ]
         primary_works = main_crew if main_crew else crew_works
         secondary_works = cast_works
     else:
