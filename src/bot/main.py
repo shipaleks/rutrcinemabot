@@ -238,8 +238,8 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
                 f"{body}"
             )
 
-        # Handle /api/sync/complete endpoint
-        elif path == "/api/sync/complete" and method == "POST":
+        # Handle /api/sync/complete endpoint (also /sync/complete when Koyeb strips /api prefix)
+        elif path in ("/api/sync/complete", "/sync/complete") and method == "POST":
             # Read request body
             request_body = b""
             if content_length > 0:
