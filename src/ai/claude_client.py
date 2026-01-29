@@ -17,6 +17,24 @@ from src.config import settings
 
 logger = structlog.get_logger(__name__)
 
+# Fields that the SDK adds internally but are not accepted by the API
+_EXCLUDED_BLOCK_FIELDS = {"parsed_output"}
+
+
+def _dump_content_blocks(blocks: list[Any]) -> list[dict[str, Any]]:
+    """Serialize SDK content blocks for storage in conversation history.
+
+    Strips SDK-internal fields (e.g. parsed_output) that the API rejects.
+    """
+    result = []
+    for block in blocks:
+        d = block.model_dump()
+        for key in _EXCLUDED_BLOCK_FIELDS:
+            d.pop(key, None)
+        result.append(d)
+    return result
+
+
 # Default Claude model
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 
@@ -351,7 +369,7 @@ class ClaudeClient:
                     # Preserve all content blocks for thinking compatibility
                     context.add_message(
                         "assistant",
-                        [block.model_dump() for block in response.content],
+                        _dump_content_blocks(response.content),
                     )
                 else:
                     # Just text, save as string
@@ -375,7 +393,7 @@ class ClaudeClient:
             # Add assistant's response (with tool_use) to context
             context.add_message(
                 "assistant",
-                [block.model_dump() for block in response.content],
+                _dump_content_blocks(response.content),
             )
 
             # Execute tools and collect results
@@ -608,7 +626,7 @@ class ClaudeClient:
                 # This preserves thinking blocks with their signatures
                 context.add_message(
                     "assistant",
-                    [block.model_dump() for block in final_message.content],
+                    _dump_content_blocks(final_message.content),
                 )
 
                 # Execute tools
@@ -664,7 +682,7 @@ class ClaudeClient:
                         # Preserve all content blocks including thinking with signatures
                         context.add_message(
                             "assistant",
-                            [block.model_dump() for block in final_message.content],
+                            _dump_content_blocks(final_message.content),
                         )
                     elif accumulated_text:
                         # No thinking, just save text
