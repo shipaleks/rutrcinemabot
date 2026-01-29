@@ -40,7 +40,11 @@ from src.bot.onboarding import (
 )
 from src.bot.rutracker_auth import get_rutracker_conversation_handler
 from src.bot.seedbox_auth import get_seedbox_conversation_handler
-from src.bot.sync_api import handle_sync_complete_request, send_sync_notification
+from src.bot.sync_api import (
+    handle_sync_complete_request,
+    handle_sync_pending_request,
+    send_sync_notification,
+)
 from src.config import settings
 from src.logger import get_logger
 from src.monitoring import MonitoringScheduler
@@ -235,6 +239,20 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
             )
             response = (
                 f"HTTP/1.1 {status_code} {'OK' if status_code == 200 else 'Service Unavailable'}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{body}"
+            )
+
+        # Handle /api/sync/pending endpoint (VM daemon polls this)
+        elif path in ("/api/sync/pending", "/sync/pending") and method == "GET":
+            api_key = headers.get("x-api-key")
+            result, status_code = await handle_sync_pending_request(api_key)
+            body = json.dumps(result)
+            response = (
+                f"HTTP/1.1 {status_code} {'OK' if status_code == 200 else 'Error'}\r\n"
                 f"Content-Type: application/json\r\n"
                 f"Content-Length: {len(body)}\r\n"
                 f"Connection: close\r\n"

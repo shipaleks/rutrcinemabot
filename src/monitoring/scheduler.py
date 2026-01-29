@@ -23,6 +23,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import settings
 from src.monitoring.checker import FoundRelease, ReleaseChecker
+from src.monitoring.torrent_monitor import TorrentMonitor
 from src.seedbox import send_magnet_to_seedbox
 from src.user.storage import Monitor, get_storage
 
@@ -56,6 +57,9 @@ PUSH_MAX_HOUR = 21  # Latest hour to send pushes
 
 # Industry news settings
 NEWS_CHECK_INTERVAL_HOURS = 24  # Check news once per day
+
+# Torrent monitor settings
+TORRENT_CHECK_INTERVAL_SECONDS = 60  # Check Deluge every 60 seconds
 
 # TMDB enrichment settings
 TMDB_ENRICHMENT_INTERVAL_HOURS = 1  # Enrich watched items every hour
@@ -165,6 +169,17 @@ class MonitoringScheduler:
 
         self._scheduler = AsyncIOScheduler()
         self._checker = self._create_checker()
+        self._torrent_monitor = TorrentMonitor(self._bot)
+
+        # Add torrent monitor job - checks Deluge every 60 seconds
+        self._scheduler.add_job(
+            self._torrent_monitor.check_active_torrents,
+            trigger=IntervalTrigger(seconds=TORRENT_CHECK_INTERVAL_SECONDS),
+            id="torrent_monitor",
+            name="Torrent Download Monitor",
+            replace_existing=True,
+            max_instances=1,
+        )
 
         # Add the monitoring job - runs frequently, smart frequency filters inside
         self._scheduler.add_job(
