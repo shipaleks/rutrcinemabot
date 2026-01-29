@@ -18,9 +18,29 @@ from datetime import UTC, datetime
 import structlog
 
 from src.config import settings
+from src.monitoring.torrent_monitor import check_and_reset_sync_needed
 from src.user.storage import get_storage
 
 logger = structlog.get_logger(__name__)
+
+
+async def handle_sync_pending_request(
+    api_key: str | None,
+) -> tuple[dict, int]:
+    """Handle sync pending check from VM daemon.
+
+    Returns:
+        Tuple of (response_dict, status_code)
+    """
+    expected_key = settings.sync_api_key
+    if not expected_key:
+        return {"error": "API not configured"}, 503
+
+    if api_key != expected_key.get_secret_value():
+        return {"error": "Unauthorized"}, 401
+
+    sync_needed = check_and_reset_sync_needed()
+    return {"sync_needed": sync_needed}, 200
 
 
 async def handle_sync_complete_request(

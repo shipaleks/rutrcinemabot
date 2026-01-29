@@ -1238,6 +1238,11 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
+    async def get_downloading_torrents(self) -> list[SyncedTorrent]:
+        """Get all torrents with 'downloading' status."""
+        pass
+
+    @abstractmethod
     async def get_pending_sync_torrents(
         self,
         user_id: int | None = None,
@@ -3601,6 +3606,14 @@ class SQLiteStorage(BaseStorage):
         await self.db.commit()
         return cursor.rowcount > 0 if cursor.rowcount else False
 
+    async def get_downloading_torrents(self) -> list[SyncedTorrent]:
+        """Get all torrents with 'downloading' status."""
+        cursor = await self.db.execute(
+            "SELECT * FROM synced_torrents WHERE status = 'downloading' ORDER BY created_at",
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_synced_torrent(row) for row in rows]
+
     async def get_pending_sync_torrents(
         self,
         user_id: int | None = None,
@@ -5834,6 +5847,14 @@ class PostgresStorage(BaseStorage):
                 torrent_hash,
             )
         return result == "UPDATE 1"
+
+    async def get_downloading_torrents(self) -> list[SyncedTorrent]:
+        """Get all torrents with 'downloading' status."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM synced_torrents WHERE status = 'downloading' ORDER BY created_at",
+            )
+        return [self._row_to_synced_torrent(row) for row in rows]
 
     async def get_pending_sync_torrents(
         self,

@@ -1296,11 +1296,26 @@ async def handle_seedbox_download(tool_input: dict[str, Any]) -> str:
     result = await send_magnet_to_user_seedbox(magnet, user_id)
 
     if result.get("status") == "sent":
+        # Track torrent for sync monitoring
+        torrent_hash = result.get("hash")
+        if torrent_hash and user_id:
+            try:
+                async with get_storage() as storage:
+                    user = await storage.get_user_by_telegram_id(user_id)
+                    if user:
+                        await storage.track_torrent(
+                            user_id=user.id,
+                            torrent_hash=torrent_hash,
+                            torrent_name=name,
+                        )
+            except Exception as e:
+                logger.warning("track_torrent_failed", error=str(e))
+
         return json.dumps(
             {
                 "status": "success",
                 "message": f"Торрент '{name}' добавлен на seedbox",
-                "torrent_hash": result.get("hash"),
+                "torrent_hash": torrent_hash,
             },
             ensure_ascii=False,
         )
@@ -3774,6 +3789,21 @@ async def handle_seedbox_callback(update: Update, _context: ContextTypes.DEFAULT
                 user_id=telegram_id,
                 user_seedbox=download_result.get("user_seedbox"),
             )
+
+            # Track torrent for sync monitoring
+            torrent_hash = download_result.get("hash")
+            if torrent_hash and telegram_id:
+                try:
+                    async with get_storage() as storage:
+                        user = await storage.get_user_by_telegram_id(telegram_id)
+                        if user:
+                            await storage.track_torrent(
+                                user_id=user.id,
+                                torrent_hash=torrent_hash,
+                                torrent_name=title,
+                            )
+                except Exception as e:
+                    logger.warning("track_torrent_failed", error=str(e))
 
             # Record the download for follow-up
             if query.from_user:
