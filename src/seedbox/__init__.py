@@ -17,6 +17,7 @@ from src.seedbox.client import (
     get_torrent_status,
     is_seedbox_configured,
     send_magnet_to_seedbox,
+    send_magnet_to_user_seedbox,
 )
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "SeedboxType",
     "create_seedbox_client",
     "send_magnet_to_seedbox",
+    "send_magnet_to_user_seedbox",
     "get_torrent_status",
     "is_seedbox_configured",
 ]

@@ -39,14 +39,24 @@ from src.bot.onboarding import (
     settings_handler,
 )
 from src.bot.rutracker_auth import get_rutracker_conversation_handler
+from src.bot.seedbox_auth import get_seedbox_conversation_handler
+from src.bot.sync_api import (
+    handle_sync_complete_request,
+    handle_sync_pending_request,
+    send_sync_notification,
+)
 from src.config import settings
 from src.logger import get_logger
 from src.monitoring import MonitoringScheduler
+from src.user.storage import get_storage
 
 logger = get_logger(__name__)
 
 # Global flag to track bot health
 _bot_healthy = False
+
+# Global bot instance for sync notifications
+_bot_instance = None
 
 # Global monitoring scheduler instance
 _monitoring_scheduler: MonitoringScheduler | None = None
@@ -85,6 +95,9 @@ def create_application() -> Application:
 
     # Register Rutracker credentials conversation handler
     application.add_handler(get_rutracker_conversation_handler())
+
+    # Register Seedbox credentials conversation handler
+    application.add_handler(get_seedbox_conversation_handler())
 
     # Register model settings handlers
     from src.bot.model_settings import get_model_handlers
@@ -178,10 +191,11 @@ async def run_polling(application: Application) -> None:
 
 
 async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> None:
-    """Handle incoming HTTP requests for health checks.
+    """Handle incoming HTTP requests for health checks and sync API.
 
-    This is a minimal HTTP server that only responds to /health requests.
-    All other requests return 404.
+    Supports:
+    - GET /health - Health check endpoint
+    - POST /api/sync/complete - Sync notification from VM script
 
     Args:
         reader: Async stream reader for the connection
@@ -195,11 +209,19 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
 
         request_str = request_line.decode("utf-8").strip()
 
-        # Read headers (we don't need them, but must consume them)
+        # Read headers
+        headers: dict[str, str] = {}
+        content_length = 0
         while True:
             line = await asyncio.wait_for(reader.readline(), timeout=5.0)
             if line == b"\r\n" or line == b"\n" or not line:
                 break
+            header_line = line.decode("utf-8").strip()
+            if ":" in header_line:
+                key, value = header_line.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
+                if key.strip().lower() == "content-length":
+                    content_length = int(value.strip())
 
         # Parse request path
         parts = request_str.split(" ")
@@ -223,6 +245,66 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
                 f"\r\n"
                 f"{body}"
             )
+
+        # Handle /api/sync/pending endpoint (VM daemon polls this)
+        elif path in ("/api/sync/pending", "/sync/pending") and method == "GET":
+            api_key = headers.get("x-api-key")
+            result, status_code = await handle_sync_pending_request(api_key)
+            body = json.dumps(result)
+            response = (
+                f"HTTP/1.1 {status_code} {'OK' if status_code == 200 else 'Error'}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{body}"
+            )
+
+        # Handle /api/sync/complete endpoint (also /sync/complete when Koyeb strips /api prefix)
+        elif path in ("/api/sync/complete", "/sync/complete") and method == "POST":
+            # Read request body
+            request_body = b""
+            if content_length > 0:
+                request_body = await asyncio.wait_for(reader.read(content_length), timeout=10.0)
+
+            api_key = headers.get("x-api-key")
+            result, status_code = await handle_sync_complete_request(request_body, api_key)
+
+            # Send notification if we have a target
+            if _bot_healthy and _bot_instance:
+                telegram_id = result.get("telegram_id")
+                should_notify = result.get("notify")
+                if telegram_id or should_notify:
+                    try:
+                        # Notify specific user or all users
+                        notify_ids = []
+                        if telegram_id:
+                            notify_ids = [telegram_id]
+                        else:
+                            async with get_storage() as storage:
+                                users = await storage.get_all_users()
+                                notify_ids = [u.telegram_id for u in users]
+                        for tid in notify_ids:
+                            await send_sync_notification(
+                                _bot_instance,
+                                tid,
+                                filename=result.get("filename"),
+                                local_path=result.get("local_path"),
+                            )
+                    except Exception as e:
+                        logger.error("sync_notification_error", error=str(e))
+
+            body = json.dumps(result, ensure_ascii=False)
+            status_text = "OK" if status_code == 200 else "Error"
+            response = (
+                f"HTTP/1.1 {status_code} {status_text}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body.encode('utf-8'))}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{body}"
+            )
+
         else:
             # Return 404 for other paths
             body = json.dumps({"error": "Not Found"})
@@ -312,8 +394,10 @@ async def run_webhook(application: Application) -> None:
     _monitoring_scheduler = MonitoringScheduler(application.bot)
     _monitoring_scheduler.start()
 
-    # Mark bot as healthy now that everything is started
+    # Mark bot as healthy and store bot instance for sync notifications
     _bot_healthy = True
+    global _bot_instance
+    _bot_instance = application.bot
 
     logger.info(
         "bot_started_webhook",
