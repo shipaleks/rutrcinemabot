@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import settings
@@ -182,14 +183,15 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # Add daily Deluge cleanup job
+        # Add daily Deluge cleanup job — 4:00 AM Paris time
         self._scheduler.add_job(
             self._torrent_monitor.cleanup_completed_torrents,
-            trigger=IntervalTrigger(hours=DELUGE_CLEANUP_INTERVAL_HOURS),
+            trigger=CronTrigger(hour=4, minute=0, timezone="Europe/Paris"),
             id="deluge_cleanup",
             name="Deluge Completed Torrents Cleanup",
             replace_existing=True,
             max_instances=1,
+            next_run_time=datetime.now(UTC),  # Run once immediately to verify
         )
 
         # Add the monitoring job - runs frequently, smart frequency filters inside
