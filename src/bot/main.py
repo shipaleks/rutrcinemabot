@@ -48,7 +48,6 @@ from src.bot.sync_api import (
 from src.config import settings
 from src.logger import get_logger
 from src.monitoring import MonitoringScheduler
-from src.user.storage import get_storage
 
 logger = get_logger(__name__)
 
@@ -276,14 +275,11 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
                 should_notify = result.get("notify")
                 if telegram_id or should_notify:
                     try:
-                        # Notify specific user or all users
+                        # Notify only the specific user who initiated the download
                         notify_ids = []
                         if telegram_id:
                             notify_ids = [telegram_id]
-                        else:
-                            async with get_storage() as storage:
-                                users = await storage.get_all_users()
-                                notify_ids = [u.telegram_id for u in users]
+                        # Without telegram_id, skip notification (don't broadcast to all users)
                         for tid in notify_ids:
                             await send_sync_notification(
                                 _bot_instance,

@@ -167,6 +167,15 @@ class StreamingMessageHandler:
             # Message is identical or other BadRequest error
             if "not modified" in str(e).lower():
                 return False
+            # Markdown parse error — retry without formatting
+            if "can't parse" in str(e).lower():
+                try:
+                    await self.message.edit_text(text)
+                    self.last_sent_text = text
+                    self.last_update_time = current_time
+                    return True
+                except Exception:
+                    pass
             logger.warning(
                 "message_update_failed",
                 error=str(e),
