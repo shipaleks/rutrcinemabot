@@ -193,11 +193,11 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # One-shot immediate cleanup on startup
+        # One-shot cleanup 30 seconds after startup
         self._scheduler.add_job(
             self._torrent_monitor.cleanup_completed_torrents,
             trigger="date",
-            run_date=datetime.now(UTC),
+            run_date=datetime.now(UTC) + timedelta(seconds=30),
             id="deluge_cleanup_once",
             name="Deluge Cleanup (one-shot)",
             replace_existing=True,
