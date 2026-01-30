@@ -439,7 +439,7 @@ async def get_user_seedbox_credentials(
             username = await storage.get_credential(db_user.id, CredentialType.SEEDBOX_USERNAME)
             password = await storage.get_credential(db_user.id, CredentialType.SEEDBOX_PASSWORD)
 
-            logger.info(
+            logger.debug(
                 "seedbox_credentials_lookup",
                 telegram_id=telegram_id,
                 db_user_id=db_user.id,
