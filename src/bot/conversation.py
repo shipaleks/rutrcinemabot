@@ -2746,12 +2746,11 @@ If you can't find a good match, return {{"error": "Недостаточно да
                     ensure_ascii=False,
                 )
 
-            # Hard-filter: reject if title is in watched list (retry up to 3 times)
-            watched_set = {t.lower() for t in watched_titles}
+            # Hard-filter: reject if title is in watched (direct DB check, retry up to 3 times)
             excluded = []
             for _attempt in range(3):
                 rec_title = recommendation.get("title", "")
-                if rec_title.lower() not in watched_set:
+                if not rec_title or not await storage.is_watched_by_title(user_id, rec_title):
                     break
                 logger.warning(
                     "hidden_gem_in_watched",
