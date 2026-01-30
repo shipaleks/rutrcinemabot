@@ -3215,19 +3215,30 @@ class SQLiteStorage(BaseStorage):
         query: str,
         limit: int = 10,
     ) -> list[MemoryNote]:
-        """Search memory notes by keywords or content."""
-        # Simple search: check if query is in content or keywords
-        search_pattern = f"%{query}%"
+        """Search memory notes by keywords or content (word-level matching)."""
+        words = [w.strip() for w in query.split() if len(w.strip()) >= 3]
+        if not words:
+            words = [query]
+
+        # Build OR conditions for each word
+        conditions = []
+        params: list[object] = [user_id]
+        for word in words:
+            conditions.append("(content LIKE ? OR keywords LIKE ?)")
+            params.extend([f"%{word}%", f"%{word}%"])
+
+        where_clause = " OR ".join(conditions)
+        params.append(limit)
 
         cursor = await self.db.execute(
-            """
+            f"""
             SELECT * FROM memory_notes
             WHERE user_id = ? AND archived_at IS NULL
-                AND (content LIKE ? OR keywords LIKE ?)
+                AND ({where_clause})
             ORDER BY confidence DESC, access_count DESC
             LIMIT ?
             """,
-            (user_id, search_pattern, search_pattern, limit),
+            tuple(params),
         )
         rows = await cursor.fetchall()
         return [self._row_to_memory_note(row) for row in rows]
@@ -5521,21 +5532,32 @@ class PostgresStorage(BaseStorage):
         query: str,
         limit: int = 10,
     ) -> list[MemoryNote]:
-        """Search memory notes by keywords or content."""
-        search_pattern = f"%{query}%"
+        """Search memory notes by keywords or content (word-level matching)."""
+        words = [w.strip() for w in query.split() if len(w.strip()) >= 3]
+        if not words:
+            words = [query]
+
+        # Build OR conditions for each word
+        conditions = []
+        params: list[object] = [user_id]
+        for word in words:
+            idx = len(params) + 1
+            conditions.append(f"(content ILIKE ${idx} OR keywords::text ILIKE ${idx})")
+            params.append(f"%{word}%")
+
+        where_clause = " OR ".join(conditions)
+        params.append(limit)
 
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT * FROM memory_notes
                 WHERE user_id = $1 AND archived_at IS NULL
-                    AND (content ILIKE $2 OR keywords::text ILIKE $2)
+                    AND ({where_clause})
                 ORDER BY confidence DESC, access_count DESC
-                LIMIT $3
+                LIMIT ${len(params)}
                 """,
-                user_id,
-                search_pattern,
-                limit,
+                *params,
             )
         return [self._row_to_memory_note(row) for row in rows]
 
