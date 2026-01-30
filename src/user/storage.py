@@ -687,6 +687,11 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
+    async def is_watched_by_title(self, user_id: int, title: str) -> bool:
+        """Check if user has watched content by title (case-insensitive)."""
+        pass
+
+    @abstractmethod
     async def delete_watched(self, item_id: int) -> bool:
         """Delete item from watch history."""
         pass
@@ -2147,6 +2152,14 @@ class SQLiteStorage(BaseStorage):
             params = [user_id, kinopoisk_id]
 
         cursor = await self.db.execute(query, params)
+        return await cursor.fetchone() is not None
+
+    async def is_watched_by_title(self, user_id: int, title: str) -> bool:
+        """Check if user has watched content by title (case-insensitive)."""
+        cursor = await self.db.execute(
+            "SELECT 1 FROM watched WHERE user_id = ? AND lower(title) = lower(?) LIMIT 1",
+            (user_id, title),
+        )
         return await cursor.fetchone() is not None
 
     async def delete_watched(self, item_id: int) -> bool:
@@ -4577,6 +4590,16 @@ class PostgresStorage(BaseStorage):
                     kinopoisk_id,
                 )
 
+        return row is not None
+
+    async def is_watched_by_title(self, user_id: int, title: str) -> bool:
+        """Check if user has watched content by title (case-insensitive)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM watched WHERE user_id = $1 AND lower(title) = lower($2) LIMIT 1",
+                user_id,
+                title,
+            )
         return row is not None
 
     async def delete_watched(self, item_id: int) -> bool:
