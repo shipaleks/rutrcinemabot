@@ -286,15 +286,10 @@ class MonitoringScheduler:
         self._scheduler.start()
         self._is_running = True
 
-        # One-shot cleanup after scheduler is running
-        self._scheduler.add_job(
-            self._torrent_monitor.cleanup_completed_torrents,
-            trigger="date",
-            run_date=datetime.now(UTC) + timedelta(seconds=30),
-            id="deluge_cleanup_once",
-            name="Deluge Cleanup (one-shot)",
-            replace_existing=True,
-        )
+        # Run cleanup once on startup (fire-and-forget)
+        import asyncio
+
+        asyncio.ensure_future(self._torrent_monitor.cleanup_completed_torrents())
 
         logger.info(
             "monitoring_scheduler_started",
