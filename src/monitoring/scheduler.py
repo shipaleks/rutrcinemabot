@@ -289,7 +289,12 @@ class MonitoringScheduler:
         # Run cleanup once on startup (fire-and-forget)
         import asyncio
 
-        asyncio.ensure_future(self._torrent_monitor.cleanup_completed_torrents())
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._torrent_monitor.cleanup_completed_torrents())
+            logger.info("startup_cleanup_scheduled")
+        except RuntimeError:
+            logger.warning("startup_cleanup_no_loop")
 
         logger.info(
             "monitoring_scheduler_started",
