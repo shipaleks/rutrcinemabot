@@ -144,46 +144,51 @@ class TorrentMonitor:
             )
 
     async def cleanup_completed_torrents(self) -> None:
-        """Remove all seeding/synced torrents from Deluge.
+        """Remove all completed torrents from Deluge.
 
-        Runs once daily to clean up completed downloads.
+        Runs daily at 4:00 AM Paris time. Two-pass approach:
+        1. Remove tracked torrents (seeding/synced in DB) and update their status.
+        2. Remove any other completed torrents directly from Deluge (catch-all).
         """
+        logger.info("deluge_cleanup_started")
+
         try:
             async with get_storage() as storage:
+                # Pass 1: DB-tracked torrents
+                tracked_hashes: set[str] = set()
                 torrents = await storage.get_torrents_by_status("seeding")
                 synced = await storage.get_torrents_by_status("synced")
                 torrents.extend(synced)
 
-            if not torrents:
-                return
+                # Group by user
+                by_user: dict[int, list] = {}
+                for t in torrents:
+                    by_user.setdefault(t.user_id, []).append(t)
+                    tracked_hashes.add(t.torrent_hash)
 
-            # Group by user
-            by_user: dict[int, list] = {}
-            for t in torrents:
-                by_user.setdefault(t.user_id, []).append(t)
+                # Also get all users with seedbox credentials for pass 2
+                users = await storage.get_all_users(limit=1000)
 
             total_removed = 0
-            for user_id, user_torrents in by_user.items():
-                try:
-                    async with get_storage() as storage:
-                        user = await storage.get_user(user_id)
-                        if not user:
-                            continue
 
+            # Process each user
+            for user in users:
+                try:
                     host, username, password = await get_user_seedbox_credentials(user.telegram_id)
                     if not host or not password:
-                        from src.config import settings
+                        from src.config import settings as cfg
 
-                        if not settings.seedbox_host or not settings.seedbox_password:
+                        if not cfg.seedbox_host or not cfg.seedbox_password:
                             continue
-                        host = str(settings.seedbox_host)
-                        username = str(settings.seedbox_user or "")
-                        password = settings.seedbox_password.get_secret_value()
+                        host = str(cfg.seedbox_host)
+                        username = str(cfg.seedbox_user or "")
+                        password = cfg.seedbox_password.get_secret_value()
 
                     async with DelugeClient(
                         host=host, username=username or "", password=password
                     ) as client:
-                        for torrent in user_torrents:
+                        # Pass 1: remove DB-tracked torrents for this user
+                        for torrent in by_user.get(user.id, []):
                             removed = await client.remove_torrent(
                                 torrent.torrent_hash, remove_data=True
                             )
@@ -195,11 +200,25 @@ class TorrentMonitor:
                                     )
                                 total_removed += 1
 
-                except Exception as e:
-                    logger.warning("cleanup_user_failed", user_id=user_id, error=str(e))
+                        # Pass 2: remove any completed torrents not in DB
+                        all_torrents = await client.list_torrents()
+                        for t in all_torrents:
+                            if t.hash in tracked_hashes:
+                                continue  # Already handled in pass 1
+                            if t.is_complete:
+                                removed = await client.remove_torrent(t.hash, remove_data=True)
+                                if removed:
+                                    total_removed += 1
+                                    logger.info(
+                                        "cleanup_untracked_torrent_removed",
+                                        hash=t.hash[:8],
+                                        name=t.name[:50],
+                                    )
 
-            if total_removed > 0:
-                logger.info("deluge_cleanup_completed", removed=total_removed)
+                except Exception as e:
+                    logger.warning("cleanup_user_failed", user_id=user.id, error=str(e))
+
+            logger.info("deluge_cleanup_completed", removed=total_removed)
 
         except Exception as e:
             logger.error("deluge_cleanup_error", error=str(e))
