@@ -6,6 +6,7 @@ by progressively updating Telegram messages as content is generated.
 
 import asyncio
 import contextlib
+import re
 from collections.abc import AsyncIterator
 
 import structlog
@@ -15,6 +16,12 @@ from telegram.error import BadRequest, RetryAfter, TimedOut
 from telegram.ext import ContextTypes
 
 logger = structlog.get_logger(__name__)
+
+
+def _fix_markdown_for_telegram(text: str) -> str:
+    """Convert standard markdown to Telegram Markdown v1."""
+    # **bold** → *bold*
+    return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
 
 
 class StreamingMessageHandler:
@@ -140,7 +147,7 @@ class StreamingMessageHandler:
 
         try:
             await self.message.edit_text(
-                text,
+                _fix_markdown_for_telegram(text),
                 parse_mode=ParseMode.MARKDOWN,
             )
             self.last_sent_text = text

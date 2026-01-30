@@ -2693,7 +2693,7 @@ async def handle_get_hidden_gem(tool_input: dict[str, Any]) -> str:
                 )
 
             # Get watch history (large limit to avoid recommending watched films)
-            watched = await storage.get_watched(user_id, limit=200)
+            watched = await storage.get_watched(user_id, limit=1000)
             watched_titles = [w.title for w in watched if w.title]
 
             # Generate recommendation using Claude
