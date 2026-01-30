@@ -191,7 +191,14 @@ class MonitoringScheduler:
             name="Deluge Completed Torrents Cleanup",
             replace_existing=True,
             max_instances=1,
-            next_run_time=datetime.now(UTC),  # Run once immediately to verify
+        )
+
+        # One-shot immediate cleanup on startup
+        self._scheduler.add_job(
+            self._torrent_monitor.cleanup_completed_torrents,
+            id="deluge_cleanup_once",
+            name="Deluge Cleanup (one-shot)",
+            replace_existing=True,
         )
 
         # Add the monitoring job - runs frequently, smart frequency filters inside
