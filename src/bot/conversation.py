@@ -221,7 +221,8 @@ async def _resolve_user_id(user_id_input: int | None) -> int | None:
                 return user.id
 
             return None
-    except Exception:
+    except Exception as e:
+        logger.warning("resolve_user_id_failed", user_id_input=user_id_input, error=str(e))
         return None
 
 

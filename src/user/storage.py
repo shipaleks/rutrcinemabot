@@ -729,6 +729,11 @@ class BaseStorage(ABC):
         """Update TMDB data for a watched item."""
         pass
 
+    @abstractmethod
+    async def clear_watched(self, user_id: int) -> int:
+        """Delete all watched items for a user. Returns count deleted."""
+        pass
+
     # -------------------------------------------------------------------------
     # Watchlist CRUD
     # -------------------------------------------------------------------------
@@ -778,6 +783,11 @@ class BaseStorage(ABC):
         kinopoisk_id: int | None = None,
     ) -> bool:
         """Check if item is in watchlist."""
+        pass
+
+    @abstractmethod
+    async def clear_watchlist(self, user_id: int) -> int:
+        """Delete all watchlist items for a user. Returns count deleted."""
         pass
 
     # -------------------------------------------------------------------------
@@ -2258,6 +2268,12 @@ class SQLiteStorage(BaseStorage):
         await self.db.commit()
         return True
 
+    async def clear_watched(self, user_id: int) -> int:
+        """Delete all watched items for a user."""
+        cursor = await self.db.execute("DELETE FROM watched WHERE user_id = ?", (user_id,))
+        await self.db.commit()
+        return cursor.rowcount or 0
+
     # -------------------------------------------------------------------------
     # Watchlist CRUD Implementation
     # -------------------------------------------------------------------------
@@ -2387,6 +2403,12 @@ class SQLiteStorage(BaseStorage):
             )
 
         return await cursor.fetchone() is not None
+
+    async def clear_watchlist(self, user_id: int) -> int:
+        """Delete all watchlist items for a user."""
+        cursor = await self.db.execute("DELETE FROM watchlist WHERE user_id = ?", (user_id,))
+        await self.db.commit()
+        return cursor.rowcount or 0
 
     def _row_to_watchlist(self, row: Any) -> WatchlistItem:
         """Convert database row to WatchlistItem model."""
@@ -4655,6 +4677,12 @@ class PostgresStorage(BaseStorage):
             )
         return True
 
+    async def clear_watched(self, user_id: int) -> int:
+        """Delete all watched items for a user."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM watched WHERE user_id = $1", user_id)
+        return int(result.split()[-1])
+
     # -------------------------------------------------------------------------
     # Watchlist CRUD Implementation
     # -------------------------------------------------------------------------
@@ -4773,6 +4801,12 @@ class PostgresStorage(BaseStorage):
                 )
 
         return row is not None
+
+    async def clear_watchlist(self, user_id: int) -> int:
+        """Delete all watchlist items for a user."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM watchlist WHERE user_id = $1", user_id)
+        return int(result.split()[-1])
 
     def _row_to_watchlist(self, row: Any) -> WatchlistItem:
         """Convert database row to WatchlistItem model."""
