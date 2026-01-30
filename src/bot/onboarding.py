@@ -373,7 +373,7 @@ def _add_entity_view_to_context(
 
     # Add as user message so Claude sees it in conversation flow
     view_message = (
-        f"[Пользователь просматривает карточку: {type_name} \"{entity_name}\" "
+        f'[Пользователь просматривает карточку: {type_name} "{entity_name}" '
         f"(TMDB {entity_type}_id: {entity_id})]"
     )
     context.add_message("user", view_message)
