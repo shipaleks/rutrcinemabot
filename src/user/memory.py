@@ -610,10 +610,19 @@ class LearningDetector:
         """
         notes: list[MemoryNote] = []
 
-        # 1. Extract absolute favorites (4.5-5.0 rating)
+        # 1. Summarize favorites count and patterns (avoid duplicating individual titles
+        # which are already stored in core memory preferences block)
         if analysis.favorites:
-            top_films = [f"{f.name} ({f.year})" for f in analysis.favorites[:5]]
-            content = f"Absolute favorite films: {', '.join(top_films)}"
+            total_favs = len(analysis.favorites)
+            # Summarize decade distribution of favorites
+            decade_counts: dict[str, int] = {}
+            for f in analysis.favorites:
+                if f.year:
+                    decade = f"{f.year // 10 * 10}s"
+                    decade_counts[decade] = decade_counts.get(decade, 0) + 1
+            top_decades = sorted(decade_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+            decades_str = ", ".join(f"{d} ({c})" for d, c in top_decades)
+            content = f"Has {total_favs} all-time favorite films (rated 4.5-5.0). Top decades: {decades_str}"
             existing = await self._storage.search_memory_notes(user_id, "favorite films", limit=1)
             if not existing:
                 note = await self._storage.create_memory_note(
@@ -628,7 +637,7 @@ class LearningDetector:
                     "letterboxd_learning",
                     user_id=user_id,
                     pattern="favorites",
-                    count=len(analysis.favorites),
+                    count=total_favs,
                 )
 
         # 2. Films they strongly disliked (important for recommendations)

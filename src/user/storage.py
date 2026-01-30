@@ -106,7 +106,7 @@ class Preference(BaseModel):
     notification_enabled: bool = True
     # AI model settings
     claude_model: str = Field(default="claude-sonnet-4-5-20250929")
-    thinking_budget: int = Field(default=0)  # 0 = disabled, >0 = max thinking tokens
+    thinking_budget: int = Field(default=5120)  # 0 = disabled, >0 = max thinking tokens
     # Search settings
     default_search_source: str = Field(default="auto")  # "auto", "rutracker", "piratebay"
     created_at: datetime
@@ -2020,7 +2020,7 @@ class SQLiteStorage(BaseStorage):
             auto_download=bool(row["auto_download"]),
             notification_enabled=bool(row["notification_enabled"]),
             claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
-            thinking_budget=row.get("thinking_budget", 0),
+            thinking_budget=row.get("thinking_budget", 5120),
             default_search_source=row.get("default_search_source", "auto"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -3746,14 +3746,14 @@ class PostgresStorage(BaseStorage):
         # Apply migrations
         await self._apply_migrations()
 
-        logger.info("postgres_connected")
+        logger.debug("postgres_connected")
 
     async def close(self) -> None:
         """Close database connection pool."""
         if self._pool:
             await self._pool.close()
             self._pool = None
-            logger.info("postgres_disconnected")
+            logger.debug("postgres_disconnected")
 
     @property
     def pool(self) -> Any:
@@ -4436,7 +4436,7 @@ class PostgresStorage(BaseStorage):
             auto_download=row["auto_download"],
             notification_enabled=row["notification_enabled"],
             claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
-            thinking_budget=row.get("thinking_budget", 0),
+            thinking_budget=row.get("thinking_budget", 5120),
             default_search_source=row.get("default_search_source", "auto"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

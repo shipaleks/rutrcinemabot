@@ -1822,14 +1822,18 @@ async def handle_add_to_watchlist(tool_input: dict[str, Any]) -> str:
 
 async def handle_remove_from_watchlist(tool_input: dict[str, Any]) -> str:
     """Handle remove_from_watchlist tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     tmdb_id = tool_input.get("tmdb_id")
 
-    if not user_id or not tmdb_id:
+    if not user_id_input or not tmdb_id:
         return json.dumps(
             {"status": "error", "error": "user_id and tmdb_id are required"},
             ensure_ascii=False,
         )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("remove_from_watchlist", user_id=user_id, tmdb_id=tmdb_id)
 
@@ -1852,12 +1856,16 @@ async def handle_remove_from_watchlist(tool_input: dict[str, Any]) -> str:
 
 async def handle_get_watchlist(tool_input: dict[str, Any]) -> str:
     """Handle get_watchlist tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     media_type = tool_input.get("media_type")
     limit = tool_input.get("limit", 20)
 
-    if not user_id:
+    if not user_id_input:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("get_watchlist", user_id=user_id, media_type=media_type)
 
@@ -1951,12 +1959,12 @@ async def handle_mark_watched(tool_input: dict[str, Any]) -> str:
 
 async def handle_rate_content(tool_input: dict[str, Any]) -> str:
     """Handle rate_content tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     tmdb_id = tool_input.get("tmdb_id")
     rating = tool_input.get("rating")
     review = tool_input.get("review")
 
-    if not user_id or not tmdb_id or rating is None:
+    if not user_id_input or not tmdb_id or rating is None:
         return json.dumps(
             {"status": "error", "error": "user_id, tmdb_id, and rating are required"},
             ensure_ascii=False,
@@ -1968,6 +1976,10 @@ async def handle_rate_content(tool_input: dict[str, Any]) -> str:
             {"status": "error", "error": "rating must be between 1 and 10"},
             ensure_ascii=False,
         )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("rate_content", user_id=user_id, tmdb_id=tmdb_id, rating=rating)
 
@@ -2027,12 +2039,19 @@ async def handle_rate_content(tool_input: dict[str, Any]) -> str:
 
 async def handle_get_watch_history(tool_input: dict[str, Any]) -> str:
     """Handle get_watch_history tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     media_type = tool_input.get("media_type")
     limit = tool_input.get("limit", 20)
 
-    if not user_id:
+    if not user_id_input:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if not user_id:
+        return json.dumps(
+            {"status": "error", "error": f"User not found for id {user_id_input}"},
+            ensure_ascii=False,
+        )
 
     logger.info("get_watch_history", user_id=user_id, media_type=media_type)
 
@@ -2113,11 +2132,15 @@ async def handle_add_to_blocklist(tool_input: dict[str, Any]) -> str:
 
 async def handle_get_blocklist(tool_input: dict[str, Any]) -> str:
     """Handle get_blocklist tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     block_type = tool_input.get("block_type")
 
-    if not user_id:
+    if not user_id_input:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("get_blocklist", user_id=user_id, block_type=block_type)
 
@@ -2189,7 +2212,7 @@ async def _sync_monitors_to_memory(storage: Any, user_id: int) -> None:
 
 async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
     """Handle create_monitor tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     title = tool_input.get("title")
     tmdb_id = tool_input.get("tmdb_id")
     media_type = tool_input.get("media_type", "movie")
@@ -2200,7 +2223,7 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
     season_number = tool_input.get("season_number")
     episode_number = tool_input.get("episode_number")
 
-    if not user_id or not title:
+    if not user_id_input or not title:
         return json.dumps(
             {"status": "error", "error": "user_id and title are required"},
             ensure_ascii=False,
@@ -2215,6 +2238,10 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
             },
             ensure_ascii=False,
         )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info(
         "create_monitor",
@@ -2301,11 +2328,15 @@ async def handle_create_monitor(tool_input: dict[str, Any]) -> str:
 
 async def handle_get_monitors(tool_input: dict[str, Any]) -> str:
     """Handle get_monitors tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     status = tool_input.get("status")
 
-    if not user_id:
+    if not user_id_input:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("get_monitors", user_id=user_id, status=status)
 
@@ -2378,12 +2409,16 @@ async def handle_cancel_monitor(tool_input: dict[str, Any]) -> str:
 
 async def handle_get_crew_stats(tool_input: dict[str, Any]) -> str:
     """Handle get_crew_stats tool call."""
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     role = tool_input.get("role")
     min_films = tool_input.get("min_films", 2)
 
-    if not user_id:
+    if not user_id_input:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     logger.info("get_crew_stats", user_id=user_id, role=role, min_films=min_films)
 
@@ -2416,14 +2451,18 @@ async def handle_letterboxd_sync(tool_input: dict[str, Any]) -> str:
     """Handle letterboxd_sync tool call (RSS-based import)."""
     from src.services.letterboxd_rss import LetterboxdRSSError, sync_letterboxd_to_storage
 
-    user_id = tool_input.get("user_id")
+    user_id_input = tool_input.get("user_id")
     letterboxd_username = tool_input.get("letterboxd_username")
 
-    if not user_id or not letterboxd_username:
+    if not user_id_input or not letterboxd_username:
         return json.dumps(
             {"status": "error", "error": "user_id and letterboxd_username are required"},
             ensure_ascii=False,
         )
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     sync_watchlist = tool_input.get("sync_watchlist", True)
     sync_diary = tool_input.get("sync_diary", True)
@@ -2623,9 +2662,13 @@ async def handle_get_hidden_gem(tool_input: dict[str, Any]) -> str:
     from src.config import settings
     from src.user.memory import CoreMemoryManager
 
-    user_id = tool_input.get("user_id")
-    if not user_id:
+    user_id_input = tool_input.get("user_id")
+    if not user_id_input:
         return json.dumps({"status": "error", "error": "user_id is required"}, ensure_ascii=False)
+
+    user_id = await _resolve_user_id(user_id_input)
+    if user_id is None:
+        return json.dumps({"status": "error", "error": "User not found"}, ensure_ascii=False)
 
     try:
         async with get_storage() as storage:
@@ -2648,9 +2691,9 @@ async def handle_get_hidden_gem(tool_input: dict[str, Any]) -> str:
                     ensure_ascii=False,
                 )
 
-            # Get recent watch history
-            watched = await storage.get_watched(user_id, limit=20)
-            watched_titles = [w.title for w in watched]
+            # Get watch history (large limit to avoid recommending watched films)
+            watched = await storage.get_watched(user_id, limit=200)
+            watched_titles = [w.title for w in watched if w.title]
 
             # Generate recommendation using Claude
             prompt = f"""Based on this user's profile, suggest ONE hidden gem film.
@@ -2658,7 +2701,7 @@ async def handle_get_hidden_gem(tool_input: dict[str, Any]) -> str:
 Profile:
 {profile_context}
 
-Recently watched: {", ".join(watched_titles[:10]) if watched_titles else "No data"}
+Already watched (DO NOT recommend any of these): {", ".join(watched_titles) if watched_titles else "No data"}
 
 Requirements:
 - NOT a blockbuster (no Marvel, Star Wars, Fast & Furious, etc.)

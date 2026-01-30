@@ -60,7 +60,7 @@ PUSH_MAX_HOUR = 21  # Latest hour to send pushes
 NEWS_CHECK_INTERVAL_HOURS = 24  # Check news once per day
 
 # Torrent monitor settings
-TORRENT_CHECK_INTERVAL_SECONDS = 60  # Check Deluge every 60 seconds
+TORRENT_CHECK_INTERVAL_SECONDS = 300  # Check Deluge every 5 minutes
 DELUGE_CLEANUP_INTERVAL_HOURS = 24  # Clean completed torrents from Deluge daily
 
 # TMDB enrichment settings
@@ -168,6 +168,12 @@ class MonitoringScheduler:
         if self._is_running:
             logger.warning("scheduler_already_running")
             return
+
+        # Suppress noisy APScheduler execution logs for frequent jobs
+        import logging
+
+        logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+        logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 
         self._scheduler = AsyncIOScheduler()
         self._checker = self._create_checker()

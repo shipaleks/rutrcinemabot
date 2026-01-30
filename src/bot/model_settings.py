@@ -19,6 +19,7 @@ Thinking levels:
 
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from src.user.storage import get_storage
@@ -151,7 +152,7 @@ async def model_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Get current settings
     current_model = "claude-sonnet-4-5-20250929"  # default
-    current_thinking = 0  # default
+    current_thinking = 5120  # default
 
     try:
         async with get_storage() as storage:
@@ -257,11 +258,15 @@ async def model_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     # Update message with new settings
-    await query.edit_message_text(
-        get_status_text(current_model, current_thinking),
-        reply_markup=get_model_keyboard(current_model, current_thinking),
-        parse_mode="Markdown",
-    )
+    try:
+        await query.edit_message_text(
+            get_status_text(current_model, current_thinking),
+            reply_markup=get_model_keyboard(current_model, current_thinking),
+            parse_mode="Markdown",
+        )
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
 
 
 def get_model_handlers() -> list:
@@ -286,7 +291,7 @@ async def get_user_model_settings(telegram_id: int) -> tuple[str, int]:
         Tuple of (model_id, thinking_budget).
     """
     default_model = "claude-sonnet-4-5-20250929"
-    default_thinking = 0
+    default_thinking = 5120
 
     try:
         async with get_storage() as storage:
