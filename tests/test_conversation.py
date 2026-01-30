@@ -537,13 +537,13 @@ class TestContextAwareResponses:
         mock_preferences.audio_language = "en"
         mock_preferences.preferred_genres = ["action", "sci-fi"]
 
-        with patch("src.bot.conversation.UserStorage") as mock_storage_class:
+        with patch("src.bot.conversation.get_storage") as mock_get_storage:
             mock_storage = AsyncMock()
             mock_storage.get_user_by_telegram_id = AsyncMock(return_value=mock_user)
             mock_storage.get_preferences = AsyncMock(return_value=mock_preferences)
             mock_storage.__aenter__ = AsyncMock(return_value=mock_storage)
             mock_storage.__aexit__ = AsyncMock(return_value=None)
-            mock_storage_class.return_value = mock_storage
+            mock_get_storage.return_value = mock_storage
 
             result = await handle_get_user_profile({"user_id": 555555})
             result_data = json.loads(result)
@@ -556,12 +556,12 @@ class TestContextAwareResponses:
     @pytest.mark.asyncio
     async def test_get_user_profile_not_found(self):
         """Test that get_user_profile handles non-existent users."""
-        with patch("src.bot.conversation.UserStorage") as mock_storage_class:
+        with patch("src.bot.conversation.get_storage") as mock_get_storage:
             mock_storage = AsyncMock()
             mock_storage.get_user_by_telegram_id = AsyncMock(return_value=None)
             mock_storage.__aenter__ = AsyncMock(return_value=mock_storage)
             mock_storage.__aexit__ = AsyncMock(return_value=None)
-            mock_storage_class.return_value = mock_storage
+            mock_get_storage.return_value = mock_storage
 
             result = await handle_get_user_profile({"user_id": 666666})
             result_data = json.loads(result)

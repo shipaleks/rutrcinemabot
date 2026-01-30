@@ -31,7 +31,7 @@ from src.search.piratebay import PirateBayClient, PirateBayError
 from src.search.rutracker import RutrackerClient, RutrackerError
 from src.seedbox import send_magnet_to_user_seedbox
 from src.user.profile import ProfileManager
-from src.user.storage import UserStorage, get_storage
+from src.user.storage import get_storage
 
 logger = get_logger(__name__)
 
@@ -1238,7 +1238,7 @@ async def handle_get_user_profile(tool_input: dict[str, Any]) -> str:
         if settings.encryption_key:
             encryption_key = settings.encryption_key.get_secret_value()
 
-        async with UserStorage(DEFAULT_DB_PATH, encryption_key) as storage:
+        async with get_storage(encryption_key) as storage:
             user = await storage.get_user_by_telegram_id(int(user_id))
             if not user:
                 return json.dumps(
@@ -2746,6 +2746,45 @@ If you can't find a good match, return {{"error": "Недостаточно да
                     ensure_ascii=False,
                 )
 
+            # Hard-filter: reject if title is in watched list (retry up to 3 times)
+            watched_set = {t.lower() for t in watched_titles}
+            excluded = []
+            for _attempt in range(3):
+                rec_title = recommendation.get("title", "")
+                if rec_title.lower() not in watched_set:
+                    break
+                logger.warning(
+                    "hidden_gem_in_watched",
+                    user_id=user_id,
+                    title=rec_title,
+                    attempt=_attempt + 1,
+                )
+                excluded.append(rec_title)
+                # Retry with exclusion
+                retry_prompt = (
+                    prompt
+                    + f"\n\nDO NOT suggest these (already watched or excluded): {', '.join(excluded)}"
+                )
+                retry_msg = await client.messages.create(
+                    model="claude-sonnet-4-5-20250929",
+                    max_tokens=500,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                )
+                retry_text = ""
+                for blk in retry_msg.content:
+                    if hasattr(blk, "text"):
+                        retry_text += blk.text
+                retry_match = re.search(r"\{[^{}]+\}", retry_text)
+                if retry_match:
+                    recommendation = json.loads(retry_match.group())
+                    if "error" in recommendation:
+                        return json.dumps(
+                            {"status": "error", "error": recommendation["error"]},
+                            ensure_ascii=False,
+                        )
+                else:
+                    break
+
             logger.info(
                 "hidden_gem_generated",
                 user_id=user_id,
@@ -2857,6 +2896,15 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
     """
     executor = ToolExecutor()
 
+    # Auto-inject telegram_id as user_id for tools that need it
+    def _with_user_id(handler):
+        async def wrapper(tool_input: dict[str, Any]) -> str:
+            if telegram_id is not None:
+                tool_input["user_id"] = telegram_id
+            return await handler(tool_input)
+
+        return wrapper
+
     # Create wrappers for handlers that need telegram_id
     async def rutracker_handler(tool_input: dict[str, Any]) -> str:
         return await handle_rutracker_search(tool_input, telegram_id=telegram_id)
@@ -2876,39 +2924,39 @@ def create_tool_executor(telegram_id: int | None = None) -> ToolExecutor:
             "tmdb_tv_details": handle_tmdb_tv_details,
             "kinopoisk_search": handle_kinopoisk_search,
             # User profile tools (legacy)
-            "get_user_profile": handle_get_user_profile,
-            "read_user_profile": handle_read_user_profile,
-            "update_user_profile": handle_update_user_profile,
+            "get_user_profile": _with_user_id(handle_get_user_profile),
+            "read_user_profile": _with_user_id(handle_read_user_profile),
+            "update_user_profile": _with_user_id(handle_update_user_profile),
             # Memory system tools (MemGPT-style)
-            "read_core_memory": handle_read_core_memory,
-            "update_core_memory": handle_update_core_memory,
-            "search_memory_notes": handle_search_memory_notes,
-            "create_memory_note": handle_create_memory_note,
+            "read_core_memory": _with_user_id(handle_read_core_memory),
+            "update_core_memory": _with_user_id(handle_update_core_memory),
+            "search_memory_notes": _with_user_id(handle_search_memory_notes),
+            "create_memory_note": _with_user_id(handle_create_memory_note),
             # Download tools
-            "seedbox_download": handle_seedbox_download,
+            "seedbox_download": _with_user_id(handle_seedbox_download),
             # Watchlist tools
-            "add_to_watchlist": handle_add_to_watchlist,
-            "remove_from_watchlist": handle_remove_from_watchlist,
-            "get_watchlist": handle_get_watchlist,
+            "add_to_watchlist": _with_user_id(handle_add_to_watchlist),
+            "remove_from_watchlist": _with_user_id(handle_remove_from_watchlist),
+            "get_watchlist": _with_user_id(handle_get_watchlist),
             # Watch history & ratings
-            "mark_watched": handle_mark_watched,
-            "rate_content": handle_rate_content,
-            "get_watch_history": handle_get_watch_history,
+            "mark_watched": _with_user_id(handle_mark_watched),
+            "rate_content": _with_user_id(handle_rate_content),
+            "get_watch_history": _with_user_id(handle_get_watch_history),
             # Blocklist tools
-            "add_to_blocklist": handle_add_to_blocklist,
-            "get_blocklist": handle_get_blocklist,
+            "add_to_blocklist": _with_user_id(handle_add_to_blocklist),
+            "get_blocklist": _with_user_id(handle_get_blocklist),
             # Monitoring tools
-            "create_monitor": handle_create_monitor,
-            "get_monitors": handle_get_monitors,
+            "create_monitor": _with_user_id(handle_create_monitor),
+            "get_monitors": _with_user_id(handle_get_monitors),
             "cancel_monitor": handle_cancel_monitor,
             # Analytics tools
-            "get_crew_stats": handle_get_crew_stats,
+            "get_crew_stats": _with_user_id(handle_get_crew_stats),
             # External service sync
-            "letterboxd_sync": handle_letterboxd_sync,
+            "letterboxd_sync": _with_user_id(handle_letterboxd_sync),
             # Proactive features
             "get_industry_news": handle_get_industry_news,
             "get_recent_news": handle_get_recent_news,
-            "get_hidden_gem": handle_get_hidden_gem,
+            "get_hidden_gem": _with_user_id(handle_get_hidden_gem),
             "get_director_upcoming": handle_get_director_upcoming,
             # Web search
             "web_search": handle_web_search,
@@ -3194,7 +3242,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if settings.encryption_key:
                 encryption_key = settings.encryption_key.get_secret_value()
 
-            async with UserStorage(DEFAULT_DB_PATH, encryption_key) as storage:
+            async with get_storage(encryption_key) as storage:
                 db_user = await storage.get_user_by_telegram_id(user.id)
                 if db_user:
                     preferences = await storage.get_preferences(db_user.id)
