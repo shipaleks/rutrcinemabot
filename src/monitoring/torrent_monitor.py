@@ -52,10 +52,12 @@ class TorrentMonitor:
         # Run cleanup once on first tick after startup
         if not self._startup_cleanup_done:
             self._startup_cleanup_done = True
+            logger.info("startup_cleanup_triggering")
             try:
                 await self.cleanup_completed_torrents()
+                logger.info("startup_cleanup_finished")
             except Exception as e:
-                logger.error("startup_cleanup_error", error=str(e))
+                logger.error("startup_cleanup_error", error=str(e), exc_info=True)
 
         try:
             async with get_storage() as storage:
