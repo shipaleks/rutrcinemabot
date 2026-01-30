@@ -45,9 +45,18 @@ class TorrentMonitor:
 
     def __init__(self, bot: "Bot") -> None:
         self._bot = bot
+        self._startup_cleanup_done = False
 
     async def check_active_torrents(self) -> None:
         """Check all torrents with 'downloading' status."""
+        # Run cleanup once on first tick after startup
+        if not self._startup_cleanup_done:
+            self._startup_cleanup_done = True
+            try:
+                await self.cleanup_completed_torrents()
+            except Exception as e:
+                logger.error("startup_cleanup_error", error=str(e))
+
         try:
             async with get_storage() as storage:
                 # Get all downloading torrents grouped by user

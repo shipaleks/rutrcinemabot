@@ -286,16 +286,6 @@ class MonitoringScheduler:
         self._scheduler.start()
         self._is_running = True
 
-        # Run cleanup once on startup (fire-and-forget)
-        import asyncio
-
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._torrent_monitor.cleanup_completed_torrents())
-            logger.info("startup_cleanup_scheduled")
-        except Exception as exc:
-            logger.warning("startup_cleanup_failed", error=str(exc), type=type(exc).__name__)
-
         logger.info(
             "monitoring_scheduler_started",
             interval_hours=self._check_interval_hours,
