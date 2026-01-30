@@ -293,8 +293,8 @@ class MonitoringScheduler:
             loop = asyncio.get_running_loop()
             loop.create_task(self._torrent_monitor.cleanup_completed_torrents())
             logger.info("startup_cleanup_scheduled")
-        except RuntimeError:
-            logger.warning("startup_cleanup_no_loop")
+        except Exception as exc:
+            logger.warning("startup_cleanup_failed", error=str(exc), type=type(exc).__name__)
 
         logger.info(
             "monitoring_scheduler_started",
