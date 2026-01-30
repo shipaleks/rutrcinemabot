@@ -1626,6 +1626,12 @@ async def handle_update_core_memory(tool_input: dict[str, Any]) -> str:
             manager = CoreMemoryManager(storage)
             block = await manager.update_block(user_id, block_name, content, operation)
 
+            # Invalidate cached context so next message reloads from DB
+            # user_id_input is the telegram_id passed by Claude
+            telegram_id = user_id_input
+            if telegram_id and telegram_id in _conversation_contexts:
+                _conversation_contexts[telegram_id].context_loaded = False
+
             return json.dumps(
                 {
                     "status": "success",
@@ -3137,74 +3143,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Set remember flag in context
     conv_context.remember_requested = remember_requested
 
-    # Load user preferences and profile into context
-    try:
-        encryption_key = None
-        if settings.encryption_key:
-            encryption_key = settings.encryption_key.get_secret_value()
+    # Load user preferences and profile into context (skip if already cached)
+    if not conv_context.context_loaded:
+        try:
+            encryption_key = None
+            if settings.encryption_key:
+                encryption_key = settings.encryption_key.get_secret_value()
 
-        async with UserStorage(DEFAULT_DB_PATH, encryption_key) as storage:
-            db_user = await storage.get_user_by_telegram_id(user.id)
-            if db_user:
-                preferences = await storage.get_preferences(db_user.id)
-                if preferences:
-                    conv_context.user_preferences = {
-                        "quality": preferences.video_quality,
-                        "audio_language": preferences.audio_language,
-                        "genres": preferences.preferred_genres,
-                    }
-                    logger.debug(
-                        "user_preferences_loaded",
-                        user_id=user.id,
-                        quality=preferences.video_quality,
-                        audio_language=preferences.audio_language,
-                        genres=preferences.preferred_genres,
-                    )
+            async with UserStorage(DEFAULT_DB_PATH, encryption_key) as storage:
+                db_user = await storage.get_user_by_telegram_id(user.id)
+                if db_user:
+                    preferences = await storage.get_preferences(db_user.id)
+                    if preferences:
+                        conv_context.user_preferences = {
+                            "quality": preferences.video_quality,
+                            "audio_language": preferences.audio_language,
+                            "genres": preferences.preferred_genres,
+                        }
+                        logger.debug(
+                            "user_preferences_loaded",
+                            user_id=user.id,
+                            quality=preferences.video_quality,
+                            audio_language=preferences.audio_language,
+                            genres=preferences.preferred_genres,
+                        )
 
-                # Load user profile for Claude's context (legacy)
-                profile_manager = ProfileManager(storage)
-                conv_context.user_profile_md = await profile_manager.get_or_create_profile(
-                    db_user.id, user=db_user, preferences=preferences
-                )
-                logger.debug(
-                    "user_profile_loaded",
-                    user_id=user.id,
-                    profile_length=len(conv_context.user_profile_md)
-                    if conv_context.user_profile_md
-                    else 0,
-                )
+                    # Load core memory blocks (new MemGPT-style system)
+                    from src.user.memory import CoreMemoryManager, migrate_profile_to_core_memory
 
-                # Load core memory blocks (new MemGPT-style system)
-                from src.user.memory import CoreMemoryManager, migrate_profile_to_core_memory
+                    memory_manager = CoreMemoryManager(storage)
+                    blocks = await memory_manager.get_all_blocks(db_user.id)
 
-                memory_manager = CoreMemoryManager(storage)
-                blocks = await memory_manager.get_all_blocks(db_user.id)
+                    # Migrate old profile to core memory if blocks are empty
+                    if not blocks or all(not b.content for b in blocks):
+                        # Only load legacy profile for migration purposes
+                        profile_manager = ProfileManager(storage)
+                        legacy_profile = await profile_manager.get_or_create_profile(
+                            db_user.id, user=db_user, preferences=preferences
+                        )
+                        if legacy_profile:
+                            logger.info(
+                                "migrating_profile_to_core_memory",
+                                user_id=user.id,
+                            )
+                            blocks = await migrate_profile_to_core_memory(
+                                storage, db_user.id, legacy_profile
+                            )
 
-                # Migrate old profile to core memory if blocks are empty
-                if (
-                    not blocks or all(not b.content for b in blocks)
-                ) and conv_context.user_profile_md:
-                    logger.info(
-                        "migrating_profile_to_core_memory",
-                        user_id=user.id,
-                    )
-                    blocks = await migrate_profile_to_core_memory(
-                        storage, db_user.id, conv_context.user_profile_md
-                    )
+                    # Render core memory for Claude's context
+                    if blocks:
+                        conv_context.core_memory_content = memory_manager.render_blocks_for_context(
+                            blocks
+                        )
+                        logger.debug(
+                            "core_memory_loaded",
+                            user_id=user.id,
+                            blocks_count=len(blocks),
+                            content_length=len(conv_context.core_memory_content or ""),
+                        )
 
-                # Render core memory for Claude's context
-                if blocks:
-                    conv_context.core_memory_content = memory_manager.render_blocks_for_context(
-                        blocks
-                    )
-                    logger.debug(
-                        "core_memory_loaded",
-                        user_id=user.id,
-                        blocks_count=len(blocks),
-                        content_length=len(conv_context.core_memory_content or ""),
-                    )
-    except Exception as e:
-        logger.warning("failed_to_load_preferences", error=str(e))
+                    # Mark context as loaded to skip DB queries on subsequent messages
+                    conv_context.context_loaded = True
+        except Exception as e:
+            logger.warning("failed_to_load_preferences", error=str(e))
 
     # Get user's AI model settings
     from src.bot.model_settings import get_user_model_settings
