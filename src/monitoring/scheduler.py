@@ -193,16 +193,6 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # One-shot cleanup 30 seconds after startup
-        self._scheduler.add_job(
-            self._torrent_monitor.cleanup_completed_torrents,
-            trigger="date",
-            run_date=datetime.now(UTC) + timedelta(seconds=30),
-            id="deluge_cleanup_once",
-            name="Deluge Cleanup (one-shot)",
-            replace_existing=True,
-        )
-
         # Add the monitoring job - runs frequently, smart frequency filters inside
         self._scheduler.add_job(
             self._check_all_monitors,
@@ -295,6 +285,16 @@ class MonitoringScheduler:
 
         self._scheduler.start()
         self._is_running = True
+
+        # One-shot cleanup after scheduler is running
+        self._scheduler.add_job(
+            self._torrent_monitor.cleanup_completed_torrents,
+            trigger="date",
+            run_date=datetime.now(UTC) + timedelta(seconds=30),
+            id="deluge_cleanup_once",
+            name="Deluge Cleanup (one-shot)",
+            replace_existing=True,
+        )
 
         logger.info(
             "monitoring_scheduler_started",
