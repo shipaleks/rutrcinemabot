@@ -263,6 +263,20 @@ async def reset_profile_handler(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 logger.warning("clear_memory_notes_error", error=str(e))
 
+            # Clear watched items
+            watched_deleted = 0
+            try:
+                watched_deleted = await storage.clear_watched(db_user.id)
+            except Exception as e:
+                logger.warning("clear_watched_error", error=str(e))
+
+            # Clear watchlist items
+            watchlist_deleted = 0
+            try:
+                watchlist_deleted = await storage.clear_watchlist(db_user.id)
+            except Exception as e:
+                logger.warning("clear_watchlist_error", error=str(e))
+
             # Clear conversation sessions
             sessions_deleted = 0
             try:
@@ -278,6 +292,8 @@ async def reset_profile_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 f"• Legacy профиль: очищен\n"
                 f"• Memory блоки: {blocks_deleted}\n"
                 f"• Memory заметки: {notes_deleted}\n"
+                f"• Просмотрено: {watched_deleted}\n"
+                f"• Хочу посмотреть: {watchlist_deleted}\n"
                 f"• Сессии: {sessions_deleted}\n\n"
                 "Теперь бот начнёт изучать ваши предпочтения заново.",
                 parse_mode="Markdown",
@@ -287,6 +303,8 @@ async def reset_profile_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 user_id=user.id,
                 blocks=blocks_deleted,
                 notes=notes_deleted,
+                watched=watched_deleted,
+                watchlist=watchlist_deleted,
                 sessions=sessions_deleted,
             )
 
