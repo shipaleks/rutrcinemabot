@@ -137,6 +137,9 @@ def _estimate_tokens(content: str | list[dict[str, Any]]) -> int:
                     total += len(result_content) // 4 + 1
                 else:
                     total += len(json.dumps(result_content, ensure_ascii=False)) // 4
+            elif block_type == "image":
+                # Images use ~1600 tokens regardless of size
+                total += 1600
             elif block_type in ("thinking", "redacted_thinking"):
                 total += len(block.get("thinking", "")) // 4
             else:
@@ -606,7 +609,7 @@ class ClaudeClient:
 
     async def stream_message(
         self,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         context: ConversationContext,
         max_tokens: int = 4096,
     ) -> AsyncIterator[str]:
@@ -618,7 +621,7 @@ class ClaudeClient:
         Note: Tool calls are handled internally; only text is yielded.
 
         Args:
-            user_message: The user's message
+            user_message: The user's message (text or multimodal content blocks)
             context: Conversation context with history
             max_tokens: Maximum tokens in the response
 

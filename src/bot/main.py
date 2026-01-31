@@ -28,6 +28,7 @@ from src.bot.conversation import (
     handle_magnet_callback,
     handle_message,
     handle_monitor_callback,
+    handle_photo_message,
     handle_seedbox_callback,
     handle_torrent_callback,
 )
@@ -119,6 +120,9 @@ def create_application() -> Application:
 
     # Register follow-up handlers for download feedback
     application.add_handler(CallbackQueryHandler(handle_followup_callback, pattern="^followup_"))
+
+    # Register photo handler for image recognition (actor identification etc.)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
 
     # Register message handler for natural language conversation
     # This should be last to avoid intercepting commands

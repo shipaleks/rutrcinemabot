@@ -3184,6 +3184,153 @@ async def send_search_results_cards(
 # =============================================================================
 
 
+async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming photo messages using Claude Vision.
+
+    Downloads the photo, converts to base64, and sends to Claude as a multimodal
+    message so it can identify actors, films, posters etc.
+
+    Args:
+        update: Telegram update object.
+        context: Callback context.
+    """
+    if not update.message or not update.message.photo:
+        return
+
+    user = update.effective_user
+    if not user:
+        return
+
+    # Get the highest resolution photo
+    photo = update.message.photo[-1]
+    caption = update.message.caption or "Кто эти актёры? В каких известных фильмах они снимались?"
+
+    logger.info(
+        "photo_message_received",
+        user_id=user.id,
+        username=user.username,
+        file_id=photo.file_id,
+        caption_length=len(caption),
+    )
+
+    try:
+        # Download photo from Telegram
+        file = await photo.get_file()
+        photo_bytes = await file.download_as_bytearray()
+        photo_base64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
+    except Exception as e:
+        logger.error("photo_download_failed", user_id=user.id, error=str(e))
+        await update.message.reply_text("Не удалось загрузить фото. Попробуйте ещё раз.")
+        return
+
+    # Build multimodal content blocks for Claude Vision
+    user_content = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": photo_base64,
+            },
+        },
+        {
+            "type": "text",
+            "text": caption,
+        },
+    ]
+
+    # Reuse the same conversation flow as text messages
+    conv_context = get_conversation_context(user.id)
+    conv_context.telegram_user_id = user.id
+
+    # Load user preferences and profile (same as handle_message)
+    if not conv_context.context_loaded:
+        try:
+            encryption_key = None
+            if settings.encryption_key:
+                encryption_key = settings.encryption_key.get_secret_value()
+
+            async with get_storage(encryption_key) as storage:
+                db_user = await storage.get_user_by_telegram_id(user.id)
+                if db_user:
+                    preferences = await storage.get_preferences(db_user.id)
+                    if preferences:
+                        conv_context.user_preferences = {
+                            "quality": preferences.video_quality,
+                            "audio_language": preferences.audio_language,
+                            "genres": preferences.preferred_genres,
+                        }
+
+                    from src.user.memory import CoreMemoryManager, migrate_profile_to_core_memory
+
+                    memory_manager = CoreMemoryManager(storage)
+                    blocks = await memory_manager.get_all_blocks(db_user.id)
+
+                    if not blocks or all(not b.content for b in blocks):
+                        profile_manager = ProfileManager(storage)
+                        legacy_profile = await profile_manager.get_or_create_profile(
+                            db_user.id, user=db_user, preferences=preferences
+                        )
+                        if legacy_profile:
+                            blocks = await migrate_profile_to_core_memory(
+                                storage, db_user.id, legacy_profile
+                            )
+
+                    if blocks:
+                        conv_context.core_memory_content = memory_manager.render_blocks_for_context(
+                            blocks
+                        )
+
+                    conv_context.context_loaded = True
+        except Exception as e:
+            logger.warning("failed_to_load_preferences", error=str(e))
+
+    from src.bot.model_settings import get_user_model_settings
+
+    user_model, thinking_budget = await get_user_model_settings(user.id)
+
+    executor = create_tool_executor(telegram_id=user.id)
+    client = ClaudeClient(
+        tools=get_tool_definitions(),
+        tool_executor=executor,
+        model=user_model,
+        thinking_budget=thinking_budget,
+    )
+
+    _current_request_result_ids.clear()
+
+    try:
+        response_text = await send_streaming_message(
+            update,
+            context,
+            client.stream_message(user_content, conv_context),
+            initial_text="Смотрю на фото...",
+        )
+
+        logger.info(
+            "photo_response_sent",
+            user_id=user.id,
+            response_length=len(response_text),
+        )
+
+        touched_result_ids = list(_current_request_result_ids)
+        if touched_result_ids:
+            conv_context.last_search_result_ids = touched_result_ids[:10]
+            await send_search_results_cards(
+                context.bot,
+                update.message.chat_id,
+                touched_result_ids,
+                max_results=3,
+            )
+
+    except Exception as e:
+        logger.exception("photo_handling_failed", user_id=user.id, error=str(e))
+        with contextlib.suppress(Exception):
+            await update.message.reply_text(
+                "Произошла ошибка при обработке фото. Попробуйте ещё раз."
+            )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming text messages with natural language understanding.
 
