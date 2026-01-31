@@ -3285,16 +3285,23 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.warning("failed_to_load_preferences", error=str(e))
 
-    from src.bot.model_settings import get_user_model_settings
-
-    user_model, thinking_budget = await get_user_model_settings(user.id)
+    # Use Opus 4.5 with thinking for photo recognition — needs maximum visual intelligence
+    photo_model = "claude-opus-4-5-20251101"
+    photo_thinking_budget = 10240
 
     executor = create_tool_executor(telegram_id=user.id)
     client = ClaudeClient(
         tools=get_tool_definitions(),
         tool_executor=executor,
-        model=user_model,
-        thinking_budget=thinking_budget,
+        model=photo_model,
+        thinking_budget=photo_thinking_budget,
+    )
+
+    logger.info(
+        "photo_using_opus",
+        user_id=user.id,
+        model=photo_model,
+        thinking_budget=photo_thinking_budget,
     )
 
     _current_request_result_ids.clear()
@@ -3304,7 +3311,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             update,
             context,
             client.stream_message(user_content, conv_context),
-            initial_text="Смотрю на фото...",
+            initial_text="Смотрю на фото... 🔍",
         )
 
         logger.info(
