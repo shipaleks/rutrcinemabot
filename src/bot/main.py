@@ -270,6 +270,8 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
             result, status_code = await handle_sync_complete_request(request_body, api_key)
 
             # Send notification if we have a target
+            if not _bot_instance:
+                logger.warning("sync_notification_skipped_no_bot_instance")
             if _bot_healthy and _bot_instance:
                 telegram_id = result.get("telegram_id")
                 should_notify = result.get("notify")

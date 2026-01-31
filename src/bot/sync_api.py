@@ -111,19 +111,36 @@ async def handle_sync_complete_request(
                         return {
                             "ok": True,
                             "telegram_id": user.telegram_id,
+                            "filename": filename,
+                            "local_path": local_path,
                             "message": "Sync recorded, notification pending",
                         }, 200
                     return {"ok": True, "message": "Sync recorded"}, 200
                 logger.warning("sync_torrent_not_found", torrent_hash=torrent_hash)
                 return {"ok": False, "message": "Torrent not found"}, 404
-            # No hash — still return filename/path for notification
-            # The caller (main.py) will broadcast to bot owner
+            # No hash — try to find user by torrent name
+            if filename:
+                user = await storage.get_user_by_torrent_name(filename)
+                if user:
+                    logger.info(
+                        "sync_complete_user_found_by_name",
+                        user_id=user.id,
+                        telegram_id=user.telegram_id,
+                        filename=filename,
+                    )
+                    return {
+                        "ok": True,
+                        "telegram_id": user.telegram_id,
+                        "filename": filename,
+                        "local_path": local_path,
+                        "message": "Sync noted, notification pending",
+                    }, 200
             return {
                 "ok": True,
                 "filename": filename,
                 "local_path": local_path,
                 "notify": True,
-                "message": "Sync noted",
+                "message": "Sync noted, user not found",
             }, 200
 
     except Exception as e:

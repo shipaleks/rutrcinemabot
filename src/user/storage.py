@@ -1287,6 +1287,14 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
+    async def get_user_by_torrent_name(
+        self,
+        name: str,
+    ) -> User | None:
+        """Get user who owns a torrent by name substring match (for notifications)."""
+        pass
+
+    @abstractmethod
     async def mark_torrent_deleted(
         self,
         torrent_hash: str,
@@ -3728,6 +3736,25 @@ class SQLiteStorage(BaseStorage):
         row = await cursor.fetchone()
         return self._row_to_user(row) if row else None
 
+    async def get_user_by_torrent_name(
+        self,
+        name: str,
+    ) -> User | None:
+        """Get user who owns a torrent by name substring match."""
+        cursor = await self.db.execute(
+            """
+            SELECT u.* FROM users u
+            JOIN synced_torrents st ON u.id = st.user_id
+            WHERE st.torrent_name LIKE '%' || ? || '%'
+            AND st.status IN ('seeding', 'downloading')
+            ORDER BY st.tracked_at DESC
+            LIMIT 1
+            """,
+            (name,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_user(row) if row else None
+
     async def mark_torrent_deleted(
         self,
         torrent_hash: str,
@@ -6022,6 +6049,25 @@ class PostgresStorage(BaseStorage):
                 WHERE st.torrent_hash = $1
                 """,
                 torrent_hash,
+            )
+        return self._row_to_user(row) if row else None
+
+    async def get_user_by_torrent_name(
+        self,
+        name: str,
+    ) -> User | None:
+        """Get user who owns a torrent by name substring match."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT u.* FROM users u
+                JOIN synced_torrents st ON u.id = st.user_id
+                WHERE st.torrent_name ILIKE '%' || $1 || '%'
+                AND st.status IN ('seeding', 'downloading')
+                ORDER BY st.tracked_at DESC
+                LIMIT 1
+                """,
+                name,
             )
         return self._row_to_user(row) if row else None
 
