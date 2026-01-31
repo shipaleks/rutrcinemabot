@@ -3741,16 +3741,20 @@ class SQLiteStorage(BaseStorage):
         name: str,
     ) -> User | None:
         """Get user who owns a torrent by name substring match."""
+        import re
+
+        words = re.split(r"[\s._]+", name.strip())
+        pattern = "%" + "%".join(w for w in words if w) + "%"
         cursor = await self.db.execute(
             """
             SELECT u.* FROM users u
             JOIN synced_torrents st ON u.id = st.user_id
-            WHERE st.torrent_name LIKE '%' || ? || '%'
+            WHERE st.torrent_name LIKE ? COLLATE NOCASE
             AND st.status IN ('seeding', 'downloading')
             ORDER BY st.tracked_at DESC
             LIMIT 1
             """,
-            (name,),
+            (pattern,),
         )
         row = await cursor.fetchone()
         return self._row_to_user(row) if row else None
@@ -6056,18 +6060,27 @@ class PostgresStorage(BaseStorage):
         self,
         name: str,
     ) -> User | None:
-        """Get user who owns a torrent by name substring match."""
+        """Get user who owns a torrent by name substring match.
+
+        Normalizes separators (dots, underscores, spaces) to wildcards
+        so 'The Rehearsal S01' matches 'The.Rehearsal.S01E02...'.
+        """
+        import re
+
+        # Build LIKE pattern: split on separators, join with %
+        words = re.split(r"[\s._]+", name.strip())
+        pattern = "%" + "%".join(w for w in words if w) + "%"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT u.* FROM users u
                 JOIN synced_torrents st ON u.id = st.user_id
-                WHERE st.torrent_name ILIKE '%' || $1 || '%'
+                WHERE st.torrent_name ILIKE $1
                 AND st.status IN ('seeding', 'downloading')
                 ORDER BY st.tracked_at DESC
                 LIMIT 1
                 """,
-                name,
+                pattern,
             )
         return self._row_to_user(row) if row else None
 
