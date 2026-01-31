@@ -3239,51 +3239,50 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         },
     ]
 
-    # Reuse the same conversation flow as text messages
-    conv_context = get_conversation_context(user.id)
+    # Use a FRESH context for photo recognition to ensure thinking compatibility.
+    # Shared conversation history from text messages (Sonnet without thinking)
+    # would make the API reject extended thinking, which we need for Opus photo analysis.
+    conv_context = ConversationContext()
     conv_context.telegram_user_id = user.id
 
-    # Load user preferences and profile (same as handle_message)
-    if not conv_context.context_loaded:
-        try:
-            encryption_key = None
-            if settings.encryption_key:
-                encryption_key = settings.encryption_key.get_secret_value()
+    # Load user preferences and profile
+    try:
+        encryption_key = None
+        if settings.encryption_key:
+            encryption_key = settings.encryption_key.get_secret_value()
 
-            async with get_storage(encryption_key) as storage:
-                db_user = await storage.get_user_by_telegram_id(user.id)
-                if db_user:
-                    preferences = await storage.get_preferences(db_user.id)
-                    if preferences:
-                        conv_context.user_preferences = {
-                            "quality": preferences.video_quality,
-                            "audio_language": preferences.audio_language,
-                            "genres": preferences.preferred_genres,
-                        }
+        async with get_storage(encryption_key) as storage:
+            db_user = await storage.get_user_by_telegram_id(user.id)
+            if db_user:
+                preferences = await storage.get_preferences(db_user.id)
+                if preferences:
+                    conv_context.user_preferences = {
+                        "quality": preferences.video_quality,
+                        "audio_language": preferences.audio_language,
+                        "genres": preferences.preferred_genres,
+                    }
 
-                    from src.user.memory import CoreMemoryManager, migrate_profile_to_core_memory
+                from src.user.memory import CoreMemoryManager, migrate_profile_to_core_memory
 
-                    memory_manager = CoreMemoryManager(storage)
-                    blocks = await memory_manager.get_all_blocks(db_user.id)
+                memory_manager = CoreMemoryManager(storage)
+                blocks = await memory_manager.get_all_blocks(db_user.id)
 
-                    if not blocks or all(not b.content for b in blocks):
-                        profile_manager = ProfileManager(storage)
-                        legacy_profile = await profile_manager.get_or_create_profile(
-                            db_user.id, user=db_user, preferences=preferences
-                        )
-                        if legacy_profile:
-                            blocks = await migrate_profile_to_core_memory(
-                                storage, db_user.id, legacy_profile
-                            )
-
-                    if blocks:
-                        conv_context.core_memory_content = memory_manager.render_blocks_for_context(
-                            blocks
+                if not blocks or all(not b.content for b in blocks):
+                    profile_manager = ProfileManager(storage)
+                    legacy_profile = await profile_manager.get_or_create_profile(
+                        db_user.id, user=db_user, preferences=preferences
+                    )
+                    if legacy_profile:
+                        blocks = await migrate_profile_to_core_memory(
+                            storage, db_user.id, legacy_profile
                         )
 
-                    conv_context.context_loaded = True
-        except Exception as e:
-            logger.warning("failed_to_load_preferences", error=str(e))
+                if blocks:
+                    conv_context.core_memory_content = memory_manager.render_blocks_for_context(
+                        blocks
+                    )
+    except Exception as e:
+        logger.warning("failed_to_load_preferences", error=str(e))
 
     # Use Opus 4.5 with thinking for photo recognition — needs maximum visual intelligence
     photo_model = "claude-opus-4-5-20251101"

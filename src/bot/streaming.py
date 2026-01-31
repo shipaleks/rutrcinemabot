@@ -18,6 +18,18 @@ from telegram.ext import ContextTypes
 logger = structlog.get_logger(__name__)
 
 
+_THINKING_PATTERN = re.compile(r"<thinking>[\s\S]*?</thinking>\s*", re.DOTALL)
+_PARTIAL_THINKING_PATTERN = re.compile(r"<thinking>[\s\S]*$", re.DOTALL)
+
+
+def _strip_thinking_tags(text: str) -> str:
+    """Remove <thinking>...</thinking> blocks that leak into model output."""
+    text = _THINKING_PATTERN.sub("", text)
+    # Also strip unclosed <thinking> block (still streaming)
+    text = _PARTIAL_THINKING_PATTERN.sub("", text)
+    return text.lstrip()
+
+
 def _markdown_to_telegram_html(text: str) -> str:
     """Convert standard markdown to Telegram-safe HTML.
 
@@ -292,15 +304,19 @@ class StreamingMessageHandler:
             async for chunk in text_iterator:
                 self.accumulated_text += chunk
 
+                # Strip any <thinking> tags that leak into output
+                display_text = _strip_thinking_tags(self.accumulated_text)
+
                 # Update message if enough text accumulated and interval passed
-                if len(self.accumulated_text) >= self.min_update_length:
-                    await self.update_message(self.accumulated_text)
+                if len(display_text) >= self.min_update_length:
+                    await self.update_message(display_text)
 
             # Stop typing and send final message
             await self.stop_typing()
-            await self.finalize_message(self.accumulated_text)
+            final_text = _strip_thinking_tags(self.accumulated_text)
+            await self.finalize_message(final_text)
 
-            return self.accumulated_text
+            return final_text
 
         except Exception as e:
             logger.exception(
