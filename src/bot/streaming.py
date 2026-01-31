@@ -18,10 +18,39 @@ from telegram.ext import ContextTypes
 logger = structlog.get_logger(__name__)
 
 
-def _fix_markdown_for_telegram(text: str) -> str:
-    """Convert standard markdown to Telegram Markdown v1."""
-    # **bold** → *bold*
-    return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+def _markdown_to_telegram_html(text: str) -> str:
+    """Convert standard markdown to Telegram-safe HTML.
+
+    Handles: links, bold, italic, inline code, code blocks.
+    """
+    # Fenced code blocks ```...``` → <pre>...</pre>
+    text = re.sub(
+        r"```(?:\w*)\n?(.*?)```",
+        lambda m: f"<pre>{_escape_html(m.group(1))}</pre>",
+        text,
+        flags=re.DOTALL,
+    )
+
+    # Inline code `...` → <code>...</code>
+    text = re.sub(r"`([^`]+?)`", lambda m: f"<code>{_escape_html(m.group(1))}</code>", text)
+
+    # Links [text](url) → <a href="url">text</a>
+    text = re.sub(r"\[([^\]]+?)\]\((https?://[^\s)]+)\)", r'<a href="\2">\1</a>', text)
+
+    # Bold **text** or __text__ → <b>text</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+
+    # Italic _text_ (but not inside URLs or HTML tags)
+    text = re.sub(r"(?<![<\w/])_([^_]+?)_(?![>\w])", r"<i>\1</i>", text)
+
+    # Italic *text* (single asterisk, not double)
+    return re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<i>\1</i>", text)
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 class StreamingMessageHandler:
@@ -147,8 +176,8 @@ class StreamingMessageHandler:
 
         try:
             await self.message.edit_text(
-                _fix_markdown_for_telegram(text),
-                parse_mode=ParseMode.MARKDOWN,
+                _markdown_to_telegram_html(text),
+                parse_mode=ParseMode.HTML,
             )
             self.last_sent_text = text
             self.last_update_time = current_time
