@@ -281,7 +281,11 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
                         notify_ids = []
                         if telegram_id:
                             notify_ids = [telegram_id]
-                        # Without telegram_id, skip notification (don't broadcast to all users)
+                        if not notify_ids:
+                            logger.warning(
+                                "sync_notification_no_user",
+                                result=result,
+                            )
                         for tid in notify_ids:
                             await send_sync_notification(
                                 _bot_instance,

@@ -120,7 +120,11 @@ async def handle_sync_complete_request(
                 return {"ok": False, "message": "Torrent not found"}, 404
             # No hash — try to find user by torrent name
             if filename:
-                user = await storage.get_user_by_torrent_name(filename)
+                # Strip "(N файлов)" suffix added by sync daemon for multi-file syncs
+                import re
+
+                search_name = re.sub(r"\s*\(\d+\s+файлов?\)\s*$", "", filename)
+                user = await storage.get_user_by_torrent_name(search_name)
                 if user:
                     logger.info(
                         "sync_complete_user_found_by_name",
