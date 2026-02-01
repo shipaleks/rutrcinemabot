@@ -52,10 +52,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/media-concierge-bot"
-Documentation = "https://github.com/yourusername/media-concierge-bot#readme"
-Repository = "https://github.com/yourusername/media-concierge-bot"
-Issues = "https://github.com/yourusername/media-concierge-bot/issues"
+Homepage = "https://github.com/shipaleks/media-concierge-bot"
+Documentation = "https://github.com/shipaleks/media-concierge-bot#readme"
+Repository = "https://github.com/shipaleks/media-concierge-bot"
+Issues = "https://github.com/shipaleks/media-concierge-bot/issues"
 
 [tool.setuptools]
 packages = ["src"]

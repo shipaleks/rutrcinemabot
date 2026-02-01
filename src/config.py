@@ -145,6 +145,11 @@ class Settings(BaseSettings):
         description="Webhook URL for Telegram (auto-configured on Koyeb)",
     )
 
+    bot_username: str = Field(
+        default="trmoviebot",
+        description="Telegram bot username (without @) for deep links",
+    )
+
     webhook_path: str = Field(
         default="/webhook",
         description="Webhook path",

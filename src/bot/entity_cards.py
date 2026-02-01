@@ -6,11 +6,12 @@ with photos and captions for display in Telegram when users click entity links.
 
 import structlog
 
+from src.config import settings
 from src.media.tmdb import TMDBClient
 
 logger = structlog.get_logger(__name__)
 
-BOT_USERNAME = "trmoviebot"
+BOT_USERNAME = settings.bot_username
 
 
 def _person_link(name: str, person_id: int) -> str:

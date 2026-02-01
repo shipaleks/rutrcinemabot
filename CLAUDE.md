@@ -55,9 +55,9 @@ User Message → Bot Module → Claude API (with tools) → ToolExecutor → Sea
 ### Key Modules
 
 - `src/bot/` — Telegram handlers and conversation flow
-  - `main.py` — Entry point, webhook/polling modes, health check server
+  - `main.py` — Entry point, webhook/polling modes, raw HTTP health check server on port 8080 (handles `/health`, `/api/sync/*`)
   - `conversation.py` — Tool handler implementations, download callbacks
-  - `streaming.py` — Progressive message updates with typing indicator
+  - `streaming.py` — Progressive message updates with markdown→HTML conversion
   - `onboarding.py` — User setup wizard (quality, genres, Letterboxd import)
   - `rutracker_auth.py` — Per-user Rutracker credentials flow
 
@@ -90,6 +90,8 @@ User downloads → Magnet sent to Deluge → hash tracked in synced_torrents (st
   → push "✅ Готово к просмотру!" → daily cleanup removes completed torrents from Deluge
 ```
 
+**Important:** The VM sync daemon (`scripts/sync_seedbox.sh`) sends POST `/api/sync/complete` with `filename` and `local_path` but **no `torrent_hash`** — it only has the cleaned-up series/movie name after sorting. The API resolves the user via fuzzy `torrent_name` match in `synced_torrents` (see `get_user_by_torrent_name`).
+
 Key: all seedbox clients (`DelugeClient` etc.) must be used as `async with` context managers.
 
 ### Storage Pattern
@@ -100,6 +102,42 @@ async with get_storage() as storage:
     user = await storage.get_user_by_telegram_id(telegram_id)
     await storage.store_credential(user.id, CredentialType.RUTRACKER_USERNAME, value)
 ```
+
+The storage has two implementations: `PostgresStorage` (production) and `SQLiteStorage` (dev). Abstract methods are declared in `UserStorage` base class. When adding a new query method, implement it in **all three places**: abstract, SQLite, Postgres. Use `ILIKE` for Postgres and `LIKE ... COLLATE NOCASE` for SQLite for case-insensitive matching.
+
+## Telegram Message Formatting
+
+**Use HTML, not Markdown.** Streaming responses convert markdown→HTML via `_markdown_to_telegram_html()` in `streaming.py`. Non-streaming messages (torrent cards, callbacks in `conversation.py`) use `parse_mode="HTML"` directly.
+
+Why: Telegram Markdown v1 is unreliable with links containing special characters, parentheses in URLs, underscores in names, etc. Broken markdown triggers a fallback to plain text (no formatting at all). HTML mode is stable.
+
+When Claude generates `[text](url)` links, they are converted to `<a href="url">text</a>` before sending. Entity deep links follow the format: `https://t.me/<bot_username>?start=m_693134` (m_=movie, t_=tv, p_=person). Bot username is configured via `BOT_USERNAME` env var.
+
+## Common Pitfalls & Lessons Learned
+
+### Data flow mismatches between components
+The most frequent bug category. When one component produces data and another consumes it, verify the **exact field names, formats, and presence** across the boundary. Examples:
+- Sync daemon sends cleaned names with spaces; DB stores original names with dots → substring match fails
+- API handler returns `telegram_id` but omits `filename`/`local_path` → notification sends but with empty content
+- API returns `notify: True` without `telegram_id` → caller has no target user → notification silently skipped
+
+### Notification delivery
+When adding any push notification flow, always trace the full path from trigger to `bot.send_message()` and verify:
+1. The `telegram_id` is actually present in the response/data passed between functions
+2. The bot instance is available (`_bot_instance` is only set in webhook mode, not polling)
+3. Errors are logged, not silently swallowed — add warning logs for "notification skipped" cases
+
+### Tool handlers need user_id
+Every tool handler in `conversation.py` must receive `user_id` (telegram_id). This has been a recurring issue — multiple tool handlers were missing `user_id` injection, causing them to silently fail or return wrong data.
+
+### Claude API content blocks
+When sending messages back to Claude API, strip any internal fields added during processing (e.g. `parsed_output`). Claude API rejects unknown fields in content blocks. Similarly, `thinking` / `redacted_thinking` blocks must be preserved correctly in conversation history.
+
+### Thinking mode
+When `thinking` is enabled, continuation calls (after tool_use) must also include thinking config. But if prior messages lack thinking blocks, disable it to avoid API errors.
+
+### APScheduler gotchas
+Scheduling async tasks at startup is tricky — `scheduler.start()` must happen before adding jobs, and the event loop must be running. One-shot cleanup jobs at startup went through 6+ fix iterations before working correctly (ended up using `loop.create_task` after scheduler start).
 
 ## Code Conventions
 
@@ -130,4 +168,4 @@ Koyeb strips `/api` prefix when routing to port 8080 — handlers accept both `/
 
 Without `DATABASE_URL`, data is lost on redeploy (SQLite in ephemeral container).
 
-VM sync daemon runs on Freebox VM (`scripts/sync_daemon.sh`) as a systemd service, polling the bot's `/api/sync/pending` endpoint.
+The optional VM sync daemon (`scripts/sync_daemon.sh`) can run as a systemd service, polling the bot's `/api/sync/pending` endpoint.

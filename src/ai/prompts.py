@@ -46,9 +46,12 @@ def get_system_prompt_blocks(
     """
     from datetime import datetime
 
+    from src.config import settings
+
     # Static part: base prompt + current date (changes daily, but cached for 5 min)
     current_date = datetime.now().strftime("%Y-%m-%d")
-    static_text = MEDIA_CONCIERGE_SYSTEM_PROMPT + f"\n\n**Сегодняшняя дата: {current_date}**\n"
+    base_prompt = MEDIA_CONCIERGE_SYSTEM_PROMPT.replace("{bot_username}", settings.bot_username)
+    static_text = base_prompt + f"\n\n**Сегодняшняя дата: {current_date}**\n"
 
     blocks: list[dict[str, Any]] = [
         {
@@ -330,9 +333,9 @@ MEDIA_CONCIERGE_SYSTEM_PROMPT = """# Media Concierge Bot
 ВСЕ упоминания фильмов, сериалов и персон (режиссёров, актёров) ОБЯЗАТЕЛЬНО оформляй как кликабельные ссылки. Это основная функция бота — пользователь кликает на название и видит карточку с фото.
 
 **Формат ссылок:**
-- Персоны: `[Denis Villeneuve](https://t.me/trmoviebot?start=p_137427)`
-- Фильмы: `[Dune: Part Two](https://t.me/trmoviebot?start=m_693134)`
-- Сериалы: `[Breaking Bad](https://t.me/trmoviebot?start=t_1396)`
+- Персоны: `[Denis Villeneuve](https://t.me/{bot_username}?start=p_137427)`
+- Фильмы: `[Dune: Part Two](https://t.me/{bot_username}?start=m_693134)`
+- Сериалы: `[Breaking Bad](https://t.me/{bot_username}?start=t_1396)`
 
 **⚠️ КРИТИЧЕСКИ ВАЖНО — Как получить TMDB ID:**
 - Фильмы/сериалы: из tmdb_search (поле "id")
@@ -355,9 +358,9 @@ ID персон в TMDB НЕ соответствуют твоим знания�
 6. **В новостях ВСЕГДА вызывай tmdb_batch_entity_search СРАЗУ после получения новостей!**
 
 **Примеры правильного использования:**
-- "Рекомендую [Arrival](https://t.me/trmoviebot?start=m_329865) — отличный sci-fi от [Denis Villeneuve](https://t.me/trmoviebot?start=p_137427)"
-- "В главных ролях [Timothée Chalamet](https://t.me/trmoviebot?start=p_1190668) и [Zendaya](https://t.me/trmoviebot?start=p_505710)"
-- "Если понравился [Breaking Bad](https://t.me/trmoviebot?start=t_1396), посмотри [Better Call Saul](https://t.me/trmoviebot?start=t_60059)"
+- "Рекомендую [Arrival](https://t.me/{bot_username}?start=m_329865) — отличный sci-fi от [Denis Villeneuve](https://t.me/{bot_username}?start=p_137427)"
+- "В главных ролях [Timothée Chalamet](https://t.me/{bot_username}?start=p_1190668) и [Zendaya](https://t.me/{bot_username}?start=p_505710)"
+- "Если понравился [Breaking Bad](https://t.me/{bot_username}?start=t_1396), посмотри [Better Call Saul](https://t.me/{bot_username}?start=t_60059)"
 
 **АЛГОРИТМ для КАЖДОГО ответа:**
 1. Перед формированием ответа — собери список ВСЕХ фильмов, сериалов и персон, которые будут упомянуты
@@ -530,7 +533,9 @@ def get_system_prompt(
     """
     from datetime import datetime
 
-    prompt = MEDIA_CONCIERGE_SYSTEM_PROMPT
+    from src.config import settings
+
+    prompt = MEDIA_CONCIERGE_SYSTEM_PROMPT.replace("{bot_username}", settings.bot_username)
 
     # Add current date so Claude knows what year it is
     current_date = datetime.now().strftime("%Y-%m-%d")

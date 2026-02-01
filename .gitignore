@@ -115,6 +115,16 @@ temp/
 # Docker
 .docker/
 
+# Claude Code
+.claude/
+
+# Development artifacts
+ralph.sh
+PROMPT.md
+SETUP_GUIDE.md
+progress.txt
+prd.json
+
 # Test artifacts
 .coverage
 coverage.xml
