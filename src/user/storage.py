@@ -3751,7 +3751,7 @@ class SQLiteStorage(BaseStorage):
             JOIN synced_torrents st ON u.id = st.user_id
             WHERE st.torrent_name LIKE ? COLLATE NOCASE
             AND st.status IN ('seeding', 'downloading')
-            ORDER BY st.tracked_at DESC
+            ORDER BY st.created_at DESC
             LIMIT 1
             """,
             (pattern,),
@@ -6077,7 +6077,7 @@ class PostgresStorage(BaseStorage):
                 JOIN synced_torrents st ON u.id = st.user_id
                 WHERE st.torrent_name ILIKE $1
                 AND st.status IN ('seeding', 'downloading')
-                ORDER BY st.tracked_at DESC
+                ORDER BY st.created_at DESC
                 LIMIT 1
                 """,
                 pattern,
