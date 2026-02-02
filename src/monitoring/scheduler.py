@@ -48,7 +48,7 @@ LEARNING_DETECTION_INTERVAL_HOURS = 12  # Run twice daily
 # FOLLOWUP_DAYS_THRESHOLD = 3
 
 # Digest settings
-DIGEST_CHECK_INTERVAL_HOURS = 1  # Check hourly if any digests need sending
+DIGEST_HOUR = 19  # Send digests at 19:00 Moscow time
 WEEKLY_DIGEST_DAYS = (1, 4)  # Tuesday=1, Friday=4 (Monday=0)
 
 # Proactive push intervals
@@ -233,10 +233,10 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # Add personalized digest job - check hourly, sends at user's preferred time
+        # Add personalized digest job - fires once daily at 19:00 Moscow time
         self._scheduler.add_job(
             self._send_pending_digests,
-            trigger=IntervalTrigger(hours=DIGEST_CHECK_INTERVAL_HOURS),
+            trigger=CronTrigger(hour=DIGEST_HOUR, minute=0, timezone="Europe/Moscow"),
             id="news_digest",
             name="Personalized News Digest",
             replace_existing=True,
@@ -791,21 +791,19 @@ class MonitoringScheduler:
             return False
 
     async def _send_pending_digests(self) -> None:
-        """Check which users need digests and send them.
+        """Send digests to users who need them.
 
-        Runs hourly. For each user with digest_frequency != 'none':
-        - daily: send once per day at ~19:00 in their timezone
-        - weekly: send on Tuesday and Friday at ~19:00
-
-        First-time users (digest_frequency='none' but notification_enabled=True)
-        get a trial digest to choose frequency.
+        Fires once daily at 19:00 Moscow time via CronTrigger.
+        - daily subscribers: get a digest every run
+        - weekly subscribers: get a digest on Tuesday and Friday only
+        - new users (freq='none'): get one trial digest to choose frequency
         """
         logger.info("digest_check_started")
 
         try:
-            from zoneinfo import ZoneInfo
-
             from src.monitoring.news_digest import send_digest
+
+            today_weekday = datetime.now(UTC).weekday()
 
             async with get_storage() as storage:
                 users = await storage.get_all_users(limit=1000)
@@ -818,48 +816,25 @@ class MonitoringScheduler:
                             continue
 
                         freq = prefs.digest_frequency if prefs else "none"
-                        tz_name = prefs.digest_timezone if prefs else "Europe/Moscow"
 
-                        try:
-                            tz = ZoneInfo(tz_name)
-                        except Exception:
-                            tz = ZoneInfo("Europe/Moscow")
-
-                        now_user = datetime.now(tz)
-
-                        # Only send in the evening window (18-21 local time)
-                        if not (18 <= now_user.hour <= 21):
-                            continue
-
-                        # Determine if we should send
-                        should_send = False
-                        digest_type = "daily"
+                        # Determine what to send
+                        digest_type: str | None = None
 
                         if freq == "daily":
-                            last = await storage.get_last_digest_time(user.id, "daily")
-                            if last is None or (datetime.now(UTC) - last).total_seconds() > 72000:
-                                should_send = True
-                                digest_type = "daily"
+                            digest_type = "daily"
 
-                        elif freq == "weekly":
-                            last = await storage.get_last_digest_time(user.id, "weekly")
-                            weekday = now_user.weekday()
-                            if weekday in WEEKLY_DIGEST_DAYS and (
-                                last is None or (datetime.now(UTC) - last).total_seconds() > 72000
-                            ):
-                                should_send = True
-                                digest_type = "weekly"
+                        elif freq == "weekly" and today_weekday in WEEKLY_DIGEST_DAYS:
+                            digest_type = "weekly"
 
                         elif freq == "none":
                             # Trial digest for users who haven't chosen yet
                             last_any = await storage.get_last_digest_time(user.id, "daily")
-                            last_weekly = await storage.get_last_digest_time(user.id, "weekly")
-                            if last_any is None and last_weekly is None:
-                                # Never received a digest — send trial
-                                should_send = True
-                                digest_type = "daily"
+                            if last_any is None:
+                                last_weekly = await storage.get_last_digest_time(user.id, "weekly")
+                                if last_weekly is None:
+                                    digest_type = "daily"
 
-                        if not should_send:
+                        if digest_type is None:
                             continue
 
                         success = await send_digest(
