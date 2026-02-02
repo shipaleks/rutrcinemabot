@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 
 from src.bot.conversation import (
+    handle_digest_callback,
     handle_download_callback,
     handle_followup_callback,
     handle_magnet_callback,
@@ -119,8 +120,11 @@ def create_application() -> Application:
     application.add_handler(CallbackQueryHandler(handle_torrent_callback, pattern="^dl_torrent_"))
     application.add_handler(CallbackQueryHandler(handle_seedbox_callback, pattern="^dl_seedbox_"))
 
-    # Register follow-up handlers for download feedback
+    # Register follow-up handlers for download feedback (legacy — kept for old buttons)
     application.add_handler(CallbackQueryHandler(handle_followup_callback, pattern="^followup_"))
+
+    # Register digest frequency selection handlers
+    application.add_handler(CallbackQueryHandler(handle_digest_callback, pattern="^digest_freq_"))
 
     # Register library browser handlers
     application.add_handler(CommandHandler("library", library_command))

@@ -22,7 +22,7 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -109,6 +109,8 @@ class Preference(BaseModel):
     thinking_budget: int = Field(default=5120)  # 0 = disabled, >0 = max thinking tokens
     # Search settings
     default_search_source: str = Field(default="auto")  # "auto", "rutracker", "piratebay"
+    digest_frequency: str = Field(default="none")  # "daily", "weekly", "none"
+    digest_timezone: str = Field(default="Europe/Moscow")
     created_at: datetime
     updated_at: datetime
 
@@ -301,6 +303,16 @@ class PendingPush(BaseModel):
     content: dict[str, Any]  # JSON with push data
     created_at: datetime
     sent_at: datetime | None = None
+
+
+class DigestHistory(BaseModel):
+    """Digest delivery history to avoid duplicate topics."""
+
+    id: int
+    user_id: int
+    digest_type: str  # "daily" or "weekly"
+    content_hash: str  # Hash of topics included
+    sent_at: datetime
 
 
 class SyncedTorrent(BaseModel):
@@ -639,6 +651,8 @@ class BaseStorage(ABC):
         claude_model: str | None = None,
         thinking_budget: int | None = None,
         default_search_source: str | None = None,
+        digest_frequency: str | None = None,
+        digest_timezone: str | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         pass
@@ -1177,6 +1191,23 @@ class BaseStorage(ABC):
         """Get a single download by ID."""
         pass
 
+    @abstractmethod
+    async def get_recent_unreviewed_downloads(self, user_id: int, days: int = 14) -> list[Download]:
+        """Get recent downloads that haven't been reviewed yet."""
+        pass
+
+    @abstractmethod
+    async def add_digest_history(
+        self, user_id: int, digest_type: str, content_hash: str
+    ) -> DigestHistory:
+        """Record a digest delivery."""
+        pass
+
+    @abstractmethod
+    async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
+        """Get when the last digest of given type was sent."""
+        pass
+
     # -------------------------------------------------------------------------
     # Pending Pushes CRUD
     # -------------------------------------------------------------------------
@@ -1680,6 +1711,21 @@ class SQLiteStorage(BaseStorage):
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """,
+            # Migration 24: Add digest settings to preferences and digest_history table
+            """
+            ALTER TABLE preferences ADD COLUMN digest_frequency TEXT DEFAULT 'none';
+            ALTER TABLE preferences ADD COLUMN digest_timezone TEXT DEFAULT 'Europe/Moscow';
+            CREATE TABLE IF NOT EXISTS digest_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                digest_type TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_digest_history_user_id ON digest_history(user_id);
+            CREATE INDEX IF NOT EXISTS idx_digest_history_sent_at ON digest_history(sent_at);
+            """,
         ]
 
         # Get current migration version
@@ -2003,6 +2049,8 @@ class SQLiteStorage(BaseStorage):
         claude_model: str | None = None,
         thinking_budget: int | None = None,
         default_search_source: str | None = None,
+        digest_frequency: str | None = None,
+        digest_timezone: str | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         existing = await self.get_preferences(user_id)
@@ -2042,6 +2090,12 @@ class SQLiteStorage(BaseStorage):
         if default_search_source is not None:
             updates.append("default_search_source = ?")
             params.append(default_search_source)
+        if digest_frequency is not None:
+            updates.append("digest_frequency = ?")
+            params.append(digest_frequency)
+        if digest_timezone is not None:
+            updates.append("digest_timezone = ?")
+            params.append(digest_timezone)
 
         if not updates:
             return existing
@@ -2074,6 +2128,8 @@ class SQLiteStorage(BaseStorage):
             claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
             thinking_budget=row.get("thinking_budget", 5120),
             default_search_source=row.get("default_search_source", "auto"),
+            digest_frequency=row.get("digest_frequency", "none"),
+            digest_timezone=row.get("digest_timezone", "Europe/Moscow"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -3502,6 +3558,50 @@ class SQLiteStorage(BaseStorage):
         row = await cursor.fetchone()
         return self._row_to_download(row) if row else None
 
+    async def get_recent_unreviewed_downloads(self, user_id: int, days: int = 14) -> list[Download]:
+        """Get recent downloads that haven't been reviewed (followed_up < 2)."""
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        cursor = await self.db.execute(
+            """SELECT * FROM downloads
+               WHERE user_id = ? AND followed_up < 2 AND downloaded_at >= ?
+               ORDER BY downloaded_at DESC""",
+            (user_id, cutoff),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_download(row) for row in rows]
+
+    async def add_digest_history(
+        self, user_id: int, digest_type: str, content_hash: str
+    ) -> DigestHistory:
+        """Record a digest delivery."""
+        now = datetime.now(UTC).isoformat()
+        cursor = await self.db.execute(
+            """INSERT INTO digest_history (user_id, digest_type, content_hash, sent_at)
+               VALUES (?, ?, ?, ?)""",
+            (user_id, digest_type, content_hash, now),
+        )
+        await self.db.commit()
+        return DigestHistory(
+            id=cursor.lastrowid,
+            user_id=user_id,
+            digest_type=digest_type,
+            content_hash=content_hash,
+            sent_at=datetime.fromisoformat(now),
+        )
+
+    async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
+        """Get when the last digest of given type was sent."""
+        cursor = await self.db.execute(
+            """SELECT sent_at FROM digest_history
+               WHERE user_id = ? AND digest_type = ?
+               ORDER BY sent_at DESC LIMIT 1""",
+            (user_id, digest_type),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return datetime.fromisoformat(row["sent_at"])
+        return None
+
     def _row_to_download(self, row: Any) -> Download:
         """Convert database row to Download model."""
         return Download(
@@ -4191,6 +4291,20 @@ class PostgresStorage(BaseStorage):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
             """,
+            # Migration 24: Add digest settings to preferences and digest_history table
+            """
+            ALTER TABLE preferences ADD COLUMN IF NOT EXISTS digest_frequency TEXT DEFAULT 'none';
+            ALTER TABLE preferences ADD COLUMN IF NOT EXISTS digest_timezone TEXT DEFAULT 'Europe/Moscow';
+            CREATE TABLE IF NOT EXISTS digest_history (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                digest_type TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_digest_history_user_id ON digest_history(user_id);
+            CREATE INDEX IF NOT EXISTS idx_digest_history_sent_at ON digest_history(sent_at);
+            """,
         ]
 
         async with self.pool.acquire() as conn:
@@ -4495,6 +4609,8 @@ class PostgresStorage(BaseStorage):
         claude_model: str | None = None,
         thinking_budget: int | None = None,
         default_search_source: str | None = None,
+        digest_frequency: str | None = None,
+        digest_timezone: str | None = None,
     ) -> Preference | None:
         """Update user preferences."""
         existing = await self.get_preferences(user_id)
@@ -4545,6 +4661,14 @@ class PostgresStorage(BaseStorage):
             updates.append(f"default_search_source = ${param_idx}")
             params.append(default_search_source)
             param_idx += 1
+        if digest_frequency is not None:
+            updates.append(f"digest_frequency = ${param_idx}")
+            params.append(digest_frequency)
+            param_idx += 1
+        if digest_timezone is not None:
+            updates.append(f"digest_timezone = ${param_idx}")
+            params.append(digest_timezone)
+            param_idx += 1
 
         if not updates:
             return existing
@@ -4585,6 +4709,8 @@ class PostgresStorage(BaseStorage):
             claude_model=row.get("claude_model", "claude-sonnet-4-5-20250929"),
             thinking_budget=row.get("thinking_budget", 5120),
             default_search_source=row.get("default_search_source", "auto"),
+            digest_frequency=row.get("digest_frequency", "none"),
+            digest_timezone=row.get("digest_timezone", "Europe/Moscow"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -5872,6 +5998,54 @@ class PostgresStorage(BaseStorage):
                 download_id,
             )
         return self._row_to_download(row) if row else None
+
+    async def get_recent_unreviewed_downloads(self, user_id: int, days: int = 14) -> list[Download]:
+        """Get recent downloads that haven't been reviewed (followed_up < 2)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM downloads
+                   WHERE user_id = $1 AND followed_up < 2
+                     AND downloaded_at >= NOW() - INTERVAL '1 day' * $2
+                   ORDER BY downloaded_at DESC""",
+                user_id,
+                days,
+            )
+        return [self._row_to_download(row) for row in rows]
+
+    async def add_digest_history(
+        self, user_id: int, digest_type: str, content_hash: str
+    ) -> DigestHistory:
+        """Record a digest delivery."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO digest_history (user_id, digest_type, content_hash, sent_at)
+                   VALUES ($1, $2, $3, NOW())
+                   RETURNING *""",
+                user_id,
+                digest_type,
+                content_hash,
+            )
+        return DigestHistory(
+            id=row["id"],
+            user_id=row["user_id"],
+            digest_type=row["digest_type"],
+            content_hash=row["content_hash"],
+            sent_at=row["sent_at"],
+        )
+
+    async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
+        """Get when the last digest of given type was sent."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT sent_at FROM digest_history
+                   WHERE user_id = $1 AND digest_type = $2
+                   ORDER BY sent_at DESC LIMIT 1""",
+                user_id,
+                digest_type,
+            )
+        if row:
+            return row["sent_at"]
+        return None
 
     def _row_to_download(self, row: Any) -> Download:
         """Convert database row to Download model."""

@@ -43,9 +43,13 @@ SCHEDULER_RUN_INTERVAL_HOURS = 2
 MEMORY_ARCHIVAL_INTERVAL_HOURS = 24  # Run once daily
 LEARNING_DETECTION_INTERVAL_HOURS = 12  # Run twice daily
 
-# Follow-up intervals
-FOLLOWUP_CHECK_INTERVAL_HOURS = 6  # Check for pending follow-ups 4 times daily
-FOLLOWUP_DAYS_THRESHOLD = 3  # Days after download before sending follow-up
+# Follow-up intervals (DEPRECATED — follow-ups now happen naturally in digests/conversations)
+# FOLLOWUP_CHECK_INTERVAL_HOURS = 6
+# FOLLOWUP_DAYS_THRESHOLD = 3
+
+# Digest settings
+DIGEST_CHECK_INTERVAL_HOURS = 1  # Check hourly if any digests need sending
+WEEKLY_DIGEST_DAYS = (1, 4)  # Tuesday=1, Friday=4 (Monday=0)
 
 # Proactive push intervals
 DIRECTOR_RELEASES_CHECK_HOURS = 168  # Check once per week (7 * 24)
@@ -229,12 +233,12 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # Add download follow-up job - check every 6 hours
+        # Add personalized digest job - check hourly, sends at user's preferred time
         self._scheduler.add_job(
-            self._check_pending_followups,
-            trigger=IntervalTrigger(hours=FOLLOWUP_CHECK_INTERVAL_HOURS),
-            id="download_followups",
-            name="Download Follow-ups",
+            self._send_pending_digests,
+            trigger=IntervalTrigger(hours=DIGEST_CHECK_INTERVAL_HOURS),
+            id="news_digest",
+            name="Personalized News Digest",
             replace_existing=True,
             max_instances=1,
         )
@@ -786,103 +790,95 @@ class MonitoringScheduler:
             )
             return False
 
-    async def _check_pending_followups(self) -> None:
-        """Check for downloads that need follow-up and send notifications.
+    async def _send_pending_digests(self) -> None:
+        """Check which users need digests and send them.
 
-        Sends "Did you like it?" messages for downloads older than FOLLOWUP_DAYS_THRESHOLD
-        that haven't been followed up yet.
+        Runs hourly. For each user with digest_frequency != 'none':
+        - daily: send once per day at ~19:00 in their timezone
+        - weekly: send on Tuesday and Friday at ~19:00
+
+        First-time users (digest_frequency='none' but notification_enabled=True)
+        get a trial digest to choose frequency.
         """
-        logger.info("followup_check_started")
+        logger.info("digest_check_started")
 
         try:
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            from zoneinfo import ZoneInfo
+
+            from src.monitoring.news_digest import send_digest
 
             async with get_storage() as storage:
-                # Get downloads that need follow-up
-                pending = await storage.get_pending_followups(days=FOLLOWUP_DAYS_THRESHOLD)
+                users = await storage.get_all_users(limit=1000)
 
-                if not pending:
-                    logger.debug("followup_check_no_pending")
-                    return
-
-                logger.info("followup_pending_found", count=len(pending))
-
-                for download in pending:
+                sent_count = 0
+                for user in users:
                     try:
-                        # Get user's telegram_id
-                        user = await storage.get_user(download.user_id)
-                        if not user:
+                        prefs = await storage.get_preferences(user.id)
+                        if prefs and not prefs.notification_enabled:
                             continue
 
-                        # Format the follow-up message
-                        title = download.title
-                        if download.season and download.episode:
-                            title += f" S{download.season:02d}E{download.episode:02d}"
-                        elif download.season:
-                            title += f" S{download.season:02d}"
+                        freq = prefs.digest_frequency if prefs else "none"
+                        tz_name = prefs.digest_timezone if prefs else "Europe/Moscow"
 
-                        safe_title = self._escape_markdown(title)
-                        message = (
-                            f"🎬 Ты скачал *{safe_title}* несколько дней назад.\n\nПонравилось?"
-                        )
-
-                        # Create inline keyboard
-                        buttons = [
-                            [
-                                InlineKeyboardButton(
-                                    "👍 Да",
-                                    callback_data=f"followup_yes_{download.id}",
-                                ),
-                                InlineKeyboardButton(
-                                    "👎 Нет",
-                                    callback_data=f"followup_no_{download.id}",
-                                ),
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    "📝 Оценить 1-10",
-                                    callback_data=f"followup_rate_{download.id}",
-                                ),
-                            ],
-                        ]
-                        keyboard = InlineKeyboardMarkup(buttons)
-
-                        # Send the message with Markdown fallback
                         try:
-                            await self._bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=message,
-                                parse_mode="Markdown",
-                                reply_markup=keyboard,
-                            )
+                            tz = ZoneInfo(tz_name)
                         except Exception:
-                            await self._bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=f"🎬 Ты скачал {title} несколько дней назад.\n\nПонравилось?",
-                                reply_markup=keyboard,
-                            )
+                            tz = ZoneInfo("Europe/Moscow")
 
-                        # Mark as sent
-                        await storage.mark_followup_sent(download.id)
+                        now_user = datetime.now(tz)
 
-                        logger.info(
-                            "followup_sent",
-                            user_id=user.id,
-                            download_id=download.id,
-                            title=download.title,
+                        # Only send in the evening window (18-21 local time)
+                        if not (18 <= now_user.hour <= 21):
+                            continue
+
+                        # Determine if we should send
+                        should_send = False
+                        digest_type = "daily"
+
+                        if freq == "daily":
+                            last = await storage.get_last_digest_time(user.id, "daily")
+                            if last is None or (datetime.now(UTC) - last).total_seconds() > 72000:
+                                should_send = True
+                                digest_type = "daily"
+
+                        elif freq == "weekly":
+                            last = await storage.get_last_digest_time(user.id, "weekly")
+                            weekday = now_user.weekday()
+                            if weekday in WEEKLY_DIGEST_DAYS and (
+                                last is None or (datetime.now(UTC) - last).total_seconds() > 72000
+                            ):
+                                should_send = True
+                                digest_type = "weekly"
+
+                        elif freq == "none":
+                            # Trial digest for users who haven't chosen yet
+                            last_any = await storage.get_last_digest_time(user.id, "daily")
+                            last_weekly = await storage.get_last_digest_time(user.id, "weekly")
+                            if last_any is None and last_weekly is None:
+                                # Never received a digest — send trial
+                                should_send = True
+                                digest_type = "daily"
+
+                        if not should_send:
+                            continue
+
+                        success = await send_digest(
+                            self._bot, user.id, user.telegram_id, digest_type
                         )
+                        if success:
+                            sent_count += 1
 
                     except Exception as e:
                         logger.warning(
-                            "followup_send_failed",
-                            download_id=download.id,
+                            "digest_user_failed",
+                            user_id=user.id,
                             error=str(e),
                         )
 
-                logger.info("followup_check_completed", sent=len(pending))
+                logger.info("digest_check_completed", sent=sent_count)
 
         except Exception as e:
-            logger.exception("followup_check_failed", error=str(e))
+            logger.exception("digest_check_failed", error=str(e))
 
     async def _check_director_releases(self) -> None:
         """Check for new movies from favorite directors.

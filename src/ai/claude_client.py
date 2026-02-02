@@ -167,6 +167,9 @@ class ConversationContext:
     core_memory_content: str | None = None
     telegram_user_id: int | None = None
     remember_requested: bool = False  # User explicitly asked to save (#запомни)
+    recent_downloads: list[dict[str, Any]] | None = (
+        None  # Unreviewed downloads for natural follow-up
+    )
     max_history: int = 30  # Safety cap on message count
     max_context_tokens: int = 80_000  # Token budget for conversation history
     last_search_result_ids: list[str] = field(default_factory=list)  # For re-showing buttons
@@ -389,6 +392,7 @@ class ClaudeClient:
             user_profile_md=context.user_profile_md,
             core_memory_content=context.core_memory_content,
             remember_requested=context.remember_requested,
+            recent_downloads=context.recent_downloads,
         )
 
         # Check if thinking can be enabled (requires compatible history)
@@ -634,6 +638,7 @@ class ClaudeClient:
             user_profile_md=context.user_profile_md,
             core_memory_content=context.core_memory_content,
             remember_requested=context.remember_requested,
+            recent_downloads=context.recent_downloads,
         )
 
         # Check if thinking can be enabled (requires compatible history)

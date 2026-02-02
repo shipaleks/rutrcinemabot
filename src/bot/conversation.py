@@ -3293,6 +3293,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             content_length=len(conv_context.core_memory_content or ""),
                         )
 
+                    # Load recent unreviewed downloads for natural follow-up
+                    try:
+                        downloads = await storage.get_recent_unreviewed_downloads(
+                            db_user.id, days=14
+                        )
+                        if downloads:
+                            from datetime import UTC, datetime
+
+                            now = datetime.now(UTC)
+                            conv_context.recent_downloads = [
+                                {
+                                    "title": d.title,
+                                    "media_type": d.media_type or "movie",
+                                    "days_ago": max(
+                                        1,
+                                        (now - d.downloaded_at).days
+                                        if d.downloaded_at.tzinfo
+                                        else (now - d.downloaded_at.replace(tzinfo=UTC)).days,
+                                    ),
+                                }
+                                for d in downloads[:5]
+                            ]
+                    except Exception as e:
+                        logger.debug("failed_to_load_recent_downloads", error=str(e))
+
                     # Mark context as loaded to skip DB queries on subsequent messages
                     conv_context.context_loaded = True
         except Exception as e:
@@ -4314,3 +4339,54 @@ async def _handle_monitor_cancel(query: Any, telegram_id: int, monitor_id: int) 
             logger.info("monitor_cancelled", user_id=telegram_id, monitor_id=monitor_id)
         else:
             await query.edit_message_text("Не удалось отменить мониторинг.")
+
+
+async def handle_digest_callback(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle digest frequency selection callbacks.
+
+    Callback data patterns:
+    - digest_freq_daily: User wants daily digests
+    - digest_freq_weekly: User wants weekly digests (2x/week)
+    - digest_freq_none: User doesn't want digests
+    """
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    callback_data = query.data
+    telegram_id = query.from_user.id if query.from_user else None
+    if not telegram_id:
+        return
+
+    freq_map = {
+        "digest_freq_daily": ("daily", "Ежедневный дайджест включён. Буду присылать каждый вечер."),
+        "digest_freq_weekly": (
+            "weekly",
+            "Дайджест 2 раза в неделю включён. Буду присылать по вторникам и пятницам.",
+        ),
+        "digest_freq_none": ("none", "Дайджест отключён. Если передумаете — напишите /digest."),
+    }
+
+    if callback_data not in freq_map:
+        return
+
+    frequency, message = freq_map[callback_data]
+
+    try:
+        async with get_storage() as storage:
+            db_user = await storage.get_user_by_telegram_id(telegram_id)
+            if db_user:
+                await storage.update_preferences(db_user.id, digest_frequency=frequency)
+
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(message)
+        logger.info(
+            "digest_frequency_set",
+            user_id=telegram_id,
+            frequency=frequency,
+        )
+    except Exception as e:
+        logger.warning("digest_callback_failed", error=str(e))
+        await query.message.reply_text("Не удалось сохранить настройку. Попробуйте позже.")
