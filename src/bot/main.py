@@ -32,6 +32,7 @@ from src.bot.conversation import (
     handle_torrent_callback,
 )
 from src.bot.handlers import error_handler, help_handler, profile_handler, reset_profile_handler
+from src.bot.library import library_callback, library_command, library_search_handler
 from src.bot.onboarding import (
     get_onboarding_conversation_handler,
     onboarding_start_handler,
@@ -41,6 +42,7 @@ from src.bot.onboarding import (
 from src.bot.rutracker_auth import get_rutracker_conversation_handler
 from src.bot.seedbox_auth import get_seedbox_conversation_handler
 from src.bot.sync_api import (
+    handle_library_index_request,
     handle_sync_complete_request,
     handle_sync_pending_request,
     send_sync_notification,
@@ -119,6 +121,17 @@ def create_application() -> Application:
 
     # Register follow-up handlers for download feedback
     application.add_handler(CallbackQueryHandler(handle_followup_callback, pattern="^followup_"))
+
+    # Register library browser handlers
+    application.add_handler(CommandHandler("library", library_command))
+    application.add_handler(CallbackQueryHandler(library_callback, pattern="^lib_"))
+
+    # Library search text handler in higher-priority group.
+    # When lib_awaiting_search is set, processes the query and raises ApplicationHandlerStop
+    # to prevent handle_message from running. Otherwise returns without stopping.
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, library_search_handler), group=-1
+    )
 
     # Register message handler for natural language conversation
     # This should be last to avoid intercepting commands
@@ -300,6 +313,24 @@ async def handle_health_request(reader: StreamReader, writer: StreamWriter) -> N
             status_text = "OK" if status_code == 200 else "Error"
             response = (
                 f"HTTP/1.1 {status_code} {status_text}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body.encode('utf-8'))}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{body}"
+            )
+
+        # Handle /api/sync/library-index endpoint (VM indexer pushes NAS file list)
+        elif path in ("/api/sync/library-index", "/sync/library-index") and method == "POST":
+            request_body = b""
+            if content_length > 0:
+                request_body = await asyncio.wait_for(reader.read(content_length), timeout=30.0)
+
+            api_key = headers.get("x-api-key")
+            result, status_code = await handle_library_index_request(request_body, api_key)
+            body = json.dumps(result, ensure_ascii=False)
+            response = (
+                f"HTTP/1.1 {status_code} {'OK' if status_code == 200 else 'Error'}\r\n"
                 f"Content-Type: application/json\r\n"
                 f"Content-Length: {len(body.encode('utf-8'))}\r\n"
                 f"Connection: close\r\n"

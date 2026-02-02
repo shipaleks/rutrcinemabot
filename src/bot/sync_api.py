@@ -152,6 +152,44 @@ async def handle_sync_complete_request(
         return {"error": str(e)}, 500
 
 
+async def handle_library_index_request(
+    request_body: bytes,
+    api_key: str | None,
+) -> tuple[dict, int]:
+    """Handle library index push from VM indexer script.
+
+    Receives JSON with 'movies' and 'tv' arrays, stores in DB.
+    """
+    expected_key = settings.sync_api_key
+    if not expected_key:
+        return {"error": "API not configured"}, 503
+
+    if api_key != expected_key.get_secret_value():
+        return {"error": "Unauthorized"}, 401
+
+    try:
+        data = json.loads(request_body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return {"error": f"Invalid JSON: {e}"}, 400
+
+    movies = data.get("movies", [])
+    tv = data.get("tv", [])
+
+    try:
+        async with get_storage() as storage:
+            if "movies" in data:
+                await storage.save_library_index("movies", json.dumps(movies, ensure_ascii=False))
+            if "tv" in data:
+                await storage.save_library_index("tv", json.dumps(tv, ensure_ascii=False))
+
+        logger.info("library_index_saved", movies=len(movies), tv=len(tv))
+        return {"ok": True, "movies": len(movies), "tv": len(tv)}, 200
+
+    except Exception as e:
+        logger.exception("library_index_error", error=str(e))
+        return {"error": str(e)}, 500
+
+
 async def send_sync_notification(
     bot,
     telegram_id: int,

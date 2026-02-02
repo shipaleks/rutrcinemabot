@@ -1302,6 +1302,27 @@ class BaseStorage(ABC):
         """Mark a torrent as deleted from seedbox."""
         pass
 
+    # -------------------------------------------------------------------------
+    # Library Index
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def save_library_index(
+        self,
+        category: str,
+        items_json: str,
+    ) -> None:
+        """Save (upsert) library index for a category (movies/tv)."""
+        pass
+
+    @abstractmethod
+    async def get_library_index(
+        self,
+        category: str,
+    ) -> str | None:
+        """Get library index JSON for a category."""
+        pass
+
 
 # =============================================================================
 # SQLite Implementation
@@ -1650,6 +1671,14 @@ class SQLiteStorage(BaseStorage):
             # Migration 22: Add tmdb_enrichment_failed to watched table
             """
             ALTER TABLE watched ADD COLUMN tmdb_enrichment_failed BOOLEAN DEFAULT FALSE;
+            """,
+            # Migration 23: Library index table for NAS file browsing
+            """
+            CREATE TABLE IF NOT EXISTS library_index (
+                category TEXT PRIMARY KEY,
+                items_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """,
         ]
 
@@ -3790,6 +3819,39 @@ class SQLiteStorage(BaseStorage):
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
+    # -------------------------------------------------------------------------
+    # Library Index
+    # -------------------------------------------------------------------------
+
+    async def save_library_index(
+        self,
+        category: str,
+        items_json: str,
+    ) -> None:
+        """Save (upsert) library index for a category."""
+        now = datetime.now(UTC).isoformat()
+        await self.db.execute(
+            """
+            INSERT INTO library_index (category, items_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(category) DO UPDATE SET items_json = excluded.items_json, updated_at = excluded.updated_at
+            """,
+            (category, items_json, now),
+        )
+        await self.db.commit()
+
+    async def get_library_index(
+        self,
+        category: str,
+    ) -> str | None:
+        """Get library index JSON for a category."""
+        cursor = await self.db.execute(
+            "SELECT items_json FROM library_index WHERE category = ?",
+            (category,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
 
 # =============================================================================
 # PostgreSQL Implementation
@@ -4120,6 +4182,14 @@ class PostgresStorage(BaseStorage):
             # Migration 22: Add tmdb_enrichment_failed to watched table
             """
             ALTER TABLE watched ADD COLUMN IF NOT EXISTS tmdb_enrichment_failed BOOLEAN DEFAULT FALSE;
+            """,
+            # Migration 23: Library index table for NAS file browsing
+            """
+            CREATE TABLE IF NOT EXISTS library_index (
+                category TEXT PRIMARY KEY,
+                items_json TEXT NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
             """,
         ]
 
@@ -6111,6 +6181,38 @@ class PostgresStorage(BaseStorage):
             deleted_from_seedbox_at=row["deleted_from_seedbox_at"],
             created_at=row["created_at"],
         )
+
+    # -------------------------------------------------------------------------
+    # Library Index
+    # -------------------------------------------------------------------------
+
+    async def save_library_index(
+        self,
+        category: str,
+        items_json: str,
+    ) -> None:
+        """Save (upsert) library index for a category."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO library_index (category, items_json, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (category) DO UPDATE SET items_json = $2, updated_at = NOW()
+                """,
+                category,
+                items_json,
+            )
+
+    async def get_library_index(
+        self,
+        category: str,
+    ) -> str | None:
+        """Get library index JSON for a category."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT items_json FROM library_index WHERE category = $1",
+                category,
+            )
 
 
 # =============================================================================
