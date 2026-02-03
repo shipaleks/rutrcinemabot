@@ -32,7 +32,13 @@ from src.bot.conversation import (
     handle_seedbox_callback,
     handle_torrent_callback,
 )
-from src.bot.handlers import error_handler, help_handler, profile_handler, reset_profile_handler
+from src.bot.handlers import (
+    digest_handler,
+    error_handler,
+    help_handler,
+    profile_handler,
+    reset_profile_handler,
+)
 from src.bot.library import library_callback, library_command, library_search_handler
 from src.bot.onboarding import (
     get_onboarding_conversation_handler,
@@ -93,6 +99,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("profile", profile_handler))
     application.add_handler(CommandHandler("settings", settings_handler))
     application.add_handler(CommandHandler("reset_profile", reset_profile_handler))
+    application.add_handler(CommandHandler("digest", digest_handler))
     application.add_handler(CommandHandler("health", health_check))
 
     # Register Rutracker credentials conversation handler

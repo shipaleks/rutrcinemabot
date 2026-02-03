@@ -168,11 +168,25 @@ async def generate_digest(
 
     try:
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
-        message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000 if digest_type == "daily" else 4000,
-            messages=[{"role": "user", "content": prompt}],
-        )
+
+        if digest_type == "weekly":
+            # Weekly digest uses Opus with extended thinking for deeper analysis
+            message = await client.messages.create(
+                model="claude-opus-4-5-20250514",
+                max_tokens=16000,
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 10000,
+                },
+                messages=[{"role": "user", "content": prompt}],
+            )
+        else:
+            # Daily digest uses Sonnet for speed
+            message = await client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
 
         response = ""
         for block in message.content:
