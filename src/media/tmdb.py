@@ -1401,6 +1401,24 @@ class TMDBClient:
         logger.info("tmdb_discover_anniversary", date=target_date, count=len(results))
         return results[:5]
 
+    async def is_adult_content(self, tmdb_id: int, media_type: str = "movie") -> bool:
+        """Check if content is marked as adult on TMDB.
+
+        Args:
+            tmdb_id: TMDB ID
+            media_type: "movie" or "tv"
+
+        Returns:
+            True if content is adult-only
+        """
+        try:
+            endpoint = f"/{media_type}/{tmdb_id}"
+            data = await self._request(endpoint)
+            return data.get("adult", False)
+        except Exception:
+            # If we can't check, assume not adult (err on side of asking)
+            return False
+
     async def get_recently_released_digital(self) -> list[dict[str, Any]]:
         """Get movies recently released digitally (released 30-90 days ago).
 

@@ -1184,6 +1184,11 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
+    async def reset_followup_status(self, download_id: int) -> bool:
+        """Reset followup status to pending (0) for a download."""
+        pass
+
+    @abstractmethod
     async def get_download(
         self,
         download_id: int,
@@ -3543,6 +3548,15 @@ class SQLiteStorage(BaseStorage):
                 "UPDATE downloads SET followed_up = 2 WHERE id = ?",
                 (download_id,),
             )
+        await self.db.commit()
+        return cursor.rowcount > 0 if cursor.rowcount else False
+
+    async def reset_followup_status(self, download_id: int) -> bool:
+        """Reset followup status to pending (0) for a download."""
+        cursor = await self.db.execute(
+            "UPDATE downloads SET followed_up = 0 WHERE id = ?",
+            (download_id,),
+        )
         await self.db.commit()
         return cursor.rowcount > 0 if cursor.rowcount else False
 
@@ -5985,6 +5999,15 @@ class PostgresStorage(BaseStorage):
                     "UPDATE downloads SET followed_up = 2 WHERE id = $1",
                     download_id,
                 )
+        return result == "UPDATE 1"
+
+    async def reset_followup_status(self, download_id: int) -> bool:
+        """Reset followup status to pending (0) for a download."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE downloads SET followed_up = 0 WHERE id = $1",
+                download_id,
+            )
         return result == "UPDATE 1"
 
     async def get_download(

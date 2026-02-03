@@ -24,6 +24,7 @@ from telegram.ext import (
 
 from src.bot.conversation import (
     handle_digest_callback,
+    handle_digest_feedback_callback,
     handle_download_callback,
     handle_followup_callback,
     handle_magnet_callback,
@@ -132,6 +133,9 @@ def create_application() -> Application:
 
     # Register digest frequency selection handlers
     application.add_handler(CallbackQueryHandler(handle_digest_callback, pattern="^digest_freq_"))
+
+    # Register digest feedback handlers (like/dislike/later for downloaded content)
+    application.add_handler(CallbackQueryHandler(handle_digest_feedback_callback, pattern="^dfb_"))
 
     # Register library browser handlers
     application.add_handler(CommandHandler("library", library_command))

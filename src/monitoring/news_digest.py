@@ -332,6 +332,46 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 8. Эмодзи только структурные. Максимум 3500 символов"""
 
 
+async def pick_download_for_feedback(user_id: int) -> Download | None:
+    """Pick one recent download to ask for feedback.
+
+    Filters out:
+    - Downloads already asked about (followed_up > 0)
+    - Adult content (checked via TMDB)
+
+    Args:
+        user_id: Internal user ID
+
+    Returns:
+        Download to ask about, or None if none eligible
+    """
+    from src.media.tmdb import TMDBClient
+
+    async with get_storage() as storage:
+        # Get downloads not yet asked about (followed_up = 0)
+        downloads = await storage.get_recent_unreviewed_downloads(user_id, days=14)
+        # Filter to only those never asked (followed_up = 0)
+        not_asked = [d for d in downloads if d.followed_up == 0]
+
+    if not not_asked:
+        return None
+
+    # Filter out adult content
+    async with TMDBClient() as tmdb:
+        for download in not_asked:
+            if not download.tmdb_id:
+                # No TMDB ID - skip, can't verify
+                continue
+
+            media_type = download.media_type or "movie"
+            is_adult = await tmdb.is_adult_content(download.tmdb_id, media_type)
+
+            if not is_adult:
+                return download
+
+    return None
+
+
 def compute_content_hash(data: dict[str, Any]) -> str:
     """Compute a hash of digest content to avoid duplicates."""
     # Use trending + anniversaries + news as key differentiators
@@ -427,11 +467,59 @@ async def send_digest(
         for dl in mentioned_downloads:
             await storage.mark_followup_sent(dl.id)
 
+    # Send feedback prompt for one download (if any eligible)
+    feedback_download = await pick_download_for_feedback(user_id)
+    if feedback_download:
+        await _send_feedback_prompt(bot, telegram_id, feedback_download)
+        # Mark as asked
+        async with get_storage() as storage:
+            await storage.mark_followup_sent(feedback_download.id)
+
     logger.info(
         "digest_sent",
         user_id=user_id,
         telegram_id=telegram_id,
         digest_type=digest_type,
         downloads_mentioned=len(mentioned_downloads),
+        feedback_download=feedback_download.title if feedback_download else None,
     )
     return True
+
+
+async def _send_feedback_prompt(bot: "Bot", telegram_id: int, download: Download) -> None:
+    """Send feedback prompt for a specific download.
+
+    Args:
+        bot: Telegram Bot instance
+        telegram_id: Telegram chat ID
+        download: Download to ask about
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    title = download.title
+    # Add season/episode info if present
+    if download.season and download.episode:
+        title = f"{title} (S{download.season:02d}E{download.episode:02d})"
+    elif download.season:
+        title = f"{title} (сезон {download.season})"
+
+    text = f"Кстати, ты уже посмотрел <b>{title}</b>?"
+
+    buttons = [
+        [
+            InlineKeyboardButton("👍", callback_data=f"dfb_like_{download.id}"),
+            InlineKeyboardButton("👎", callback_data=f"dfb_dislike_{download.id}"),
+            InlineKeyboardButton("👀 Ещё нет", callback_data=f"dfb_later_{download.id}"),
+        ]
+    ]
+    keyboard = InlineKeyboardMarkup(buttons)
+
+    try:
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.warning("feedback_prompt_send_failed", telegram_id=telegram_id, error=str(e))

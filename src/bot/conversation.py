@@ -4390,3 +4390,62 @@ async def handle_digest_callback(update: Update, _context: ContextTypes.DEFAULT_
     except Exception as e:
         logger.warning("digest_callback_failed", error=str(e))
         await query.message.reply_text("Не удалось сохранить настройку. Попробуйте позже.")
+
+
+async def handle_digest_feedback_callback(
+    update: Update, _context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle digest feedback button callbacks.
+
+    Callback data patterns:
+    - dfb_like_{download_id}: User liked the content
+    - dfb_dislike_{download_id}: User didn't like it
+    - dfb_later_{download_id}: User hasn't watched yet
+    """
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    callback_data = query.data
+    telegram_id = query.from_user.id if query.from_user else None
+    if not telegram_id:
+        return
+
+    # Parse callback data
+    if callback_data.startswith("dfb_like_"):
+        download_id = int(callback_data.replace("dfb_like_", ""))
+        rating = 8.0  # Like = 8
+        response = "👍 Рад, что понравилось!"
+    elif callback_data.startswith("dfb_dislike_"):
+        download_id = int(callback_data.replace("dfb_dislike_", ""))
+        rating = 4.0  # Dislike = 4
+        response = "👎 Понял, учту на будущее."
+    elif callback_data.startswith("dfb_later_"):
+        download_id = int(callback_data.replace("dfb_later_", ""))
+        # Reset followed_up to 0 so it can be asked again later
+        try:
+            async with get_storage() as storage:
+                await storage.reset_followup_status(download_id)
+        except Exception:
+            pass  # Best effort
+        await query.edit_message_text("👀 Ок, спрошу позже!")
+        return
+    else:
+        return
+
+    try:
+        async with get_storage() as storage:
+            await storage.mark_followup_answered(download_id, rating=rating)
+
+        await query.edit_message_text(response)
+        logger.info(
+            "digest_feedback_received",
+            user_id=telegram_id,
+            download_id=download_id,
+            rating=rating,
+        )
+    except Exception as e:
+        logger.warning("digest_feedback_failed", error=str(e))
+        await query.edit_message_text("Не удалось сохранить. Попробуйте позже.")
