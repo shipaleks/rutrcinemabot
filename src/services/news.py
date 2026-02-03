@@ -23,6 +23,17 @@ logger = structlog.get_logger(__name__)
 
 # Default RSS feeds for film industry news
 DEFAULT_RSS_FEEDS = [
+    # Google News is more reliable for current headlines
+    {
+        "name": "Google News: Movies",
+        "url": "https://news.google.com/rss/search?q=movies+film+cinema&hl=en-US&gl=US&ceid=US:en",
+        "category": "film",
+    },
+    {
+        "name": "Google News: TV Series",
+        "url": "https://news.google.com/rss/search?q=TV+series+streaming&hl=en-US&gl=US&ceid=US:en",
+        "category": "tv",
+    },
     {
         "name": "Deadline",
         "url": "https://deadline.com/feed/",

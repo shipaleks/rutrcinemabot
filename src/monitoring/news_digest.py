@@ -116,26 +116,57 @@ async def collect_digest_data(user_id: int) -> dict[str, Any]:
         data.setdefault("recently_digital", [])
         data.setdefault("anniversaries", [])
 
-    # Web search for industry news
+    # Fetch industry news from RSS feeds
     try:
         from src.services.news import NewsService
 
         async with NewsService() as news_service:
+            # First try keyword-filtered news
             news_items = await news_service.get_relevant_news(
-                keywords=["Oscar", "Golden Globe", "Cannes", "кино", "сериалы", "Netflix", "A24"],
+                keywords=[
+                    "Oscar",
+                    "Emmy",
+                    "Golden Globe",
+                    "Cannes",
+                    "premiere",
+                    "Netflix",
+                    "HBO",
+                    "Disney",
+                    "A24",
+                    "box office",
+                    "streaming",
+                    "trailer",
+                    "release",
+                ],
                 hours=48,
-                max_results=10,
+                max_results=15,
             )
+
+            # If not enough results, get all recent news
+            if len(news_items) < 5:
+                logger.info("digest_news_few_results", count=len(news_items))
+                all_news = await news_service.get_all_recent_news(hours=24, max_per_feed=5)
+                # Combine and deduplicate by title
+                existing_titles = {n.title.lower() for n in news_items}
+                for item in all_news:
+                    if item.title.lower() not in existing_titles:
+                        news_items.append(item)
+                        existing_titles.add(item.title.lower())
+                        if len(news_items) >= 15:
+                            break
+
             data["industry_news"] = [
                 {
                     "title": n.title,
-                    "description": n.description[:200],
+                    "description": n.description[:200] if n.description else "",
                     "source": n.source,
+                    "date": n.published_at.isoformat() if n.published_at else None,
                 }
                 for n in news_items
             ]
+            logger.info("digest_news_collected", count=len(data["industry_news"]))
     except Exception as e:
-        logger.debug("digest_news_fetch_failed", error=str(e))
+        logger.warning("digest_news_fetch_failed", error=str(e))
         data["industry_news"] = []
 
     return data
@@ -256,9 +287,15 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 
 ## Правила
 
-Дата: {today.isoformat()}
+Сегодня: {today.isoformat()}
 
-1. Выбери 3-5 объективно интересных тем из данных выше
+⚠️ КРИТИЧЕСКИ ВАЖНО:
+- ИСПОЛЬЗУЙ ТОЛЬКО данные из разделов выше
+- НЕ ДОБАВЛЯЙ информацию из своей памяти — она устарела!
+- Если в данных нет свежих новостей — НЕ ВЫДУМЫВАЙ их
+- Любой сериал/фильм "в разработке" из твоей памяти может уже выйти — не упоминай такое без источника
+
+1. Выбери 3-5 объективно интересных тем ТОЛЬКО из данных выше
 2. Пиши как новостной дайджест, а НЕ как персональные рекомендации
 3. НЕ НАДО в каждом пункте писать «учитывая ваши вкусы» или «вам понравится». Профиль нужен только чтобы отфильтровать неинтересное и адаптировать глубину подачи
 4. Персонализация должна быть НЕВИДИМОЙ — выбор тем, а не их подача
@@ -309,9 +346,15 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 
 ## Правила
 
-Дата: {today.isoformat()}
+Сегодня: {today.isoformat()}
 
-1. 7-10 тем, объективно значимых для киноиндустрии
+⚠️ КРИТИЧЕСКИ ВАЖНО:
+- ИСПОЛЬЗУЙ ТОЛЬКО данные из разделов выше
+- НЕ ДОБАВЛЯЙ информацию из своей памяти — она устарела!
+- Если сериал/фильм был "в разработке" по твоим данным — НЕ упоминай, если нет в источниках выше
+- Новости индустрии бери ТОЛЬКО из раздела "Новости индустрии"
+
+1. 7-10 тем, объективно значимых для киноиндустрии, ТОЛЬКО из данных выше
 2. Структура:
    - Короткое приветствие
    - 📰 <b>Главное за неделю</b> — крупные индустриальные новости
