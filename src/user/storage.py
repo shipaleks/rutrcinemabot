@@ -312,6 +312,7 @@ class DigestHistory(BaseModel):
     user_id: int
     digest_type: str  # "daily" or "weekly"
     content_hash: str  # Hash of topics included
+    topics_summary: str | None = None  # Summary of topics for deduplication
     sent_at: datetime
 
 
@@ -1203,7 +1204,11 @@ class BaseStorage(ABC):
 
     @abstractmethod
     async def add_digest_history(
-        self, user_id: int, digest_type: str, content_hash: str
+        self,
+        user_id: int,
+        digest_type: str,
+        content_hash: str,
+        topics_summary: str | None = None,
     ) -> DigestHistory:
         """Record a digest delivery."""
         pass
@@ -1211,6 +1216,22 @@ class BaseStorage(ABC):
     @abstractmethod
     async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
         """Get when the last digest of given type was sent."""
+        pass
+
+    @abstractmethod
+    async def get_recent_digest_topics(
+        self, user_id: int, days: int = 3, digest_type: str = "daily"
+    ) -> list[str]:
+        """Get topics from recent digests to avoid repetition.
+
+        Args:
+            user_id: Internal user ID
+            days: Look back this many days
+            digest_type: Filter by digest type
+
+        Returns:
+            List of topic summaries from recent digests
+        """
         pass
 
     # -------------------------------------------------------------------------
@@ -1730,6 +1751,10 @@ class SQLiteStorage(BaseStorage):
             );
             CREATE INDEX IF NOT EXISTS idx_digest_history_user_id ON digest_history(user_id);
             CREATE INDEX IF NOT EXISTS idx_digest_history_sent_at ON digest_history(sent_at);
+            """,
+            # Migration 25: Add topics_summary to digest_history for deduplication
+            """
+            ALTER TABLE digest_history ADD COLUMN topics_summary TEXT;
             """,
         ]
 
@@ -3585,14 +3610,18 @@ class SQLiteStorage(BaseStorage):
         return [self._row_to_download(row) for row in rows]
 
     async def add_digest_history(
-        self, user_id: int, digest_type: str, content_hash: str
+        self,
+        user_id: int,
+        digest_type: str,
+        content_hash: str,
+        topics_summary: str | None = None,
     ) -> DigestHistory:
         """Record a digest delivery."""
         now = datetime.now(UTC).isoformat()
         cursor = await self.db.execute(
-            """INSERT INTO digest_history (user_id, digest_type, content_hash, sent_at)
-               VALUES (?, ?, ?, ?)""",
-            (user_id, digest_type, content_hash, now),
+            """INSERT INTO digest_history (user_id, digest_type, content_hash, topics_summary, sent_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, digest_type, content_hash, topics_summary, now),
         )
         await self.db.commit()
         return DigestHistory(
@@ -3600,8 +3629,23 @@ class SQLiteStorage(BaseStorage):
             user_id=user_id,
             digest_type=digest_type,
             content_hash=content_hash,
+            topics_summary=topics_summary,
             sent_at=datetime.fromisoformat(now),
         )
+
+    async def get_recent_digest_topics(
+        self, user_id: int, days: int = 3, digest_type: str = "daily"
+    ) -> list[str]:
+        """Get topics from recent daily digests to avoid repetition."""
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        cursor = await self.db.execute(
+            """SELECT topics_summary FROM digest_history
+               WHERE user_id = ? AND digest_type = ? AND sent_at >= ? AND topics_summary IS NOT NULL
+               ORDER BY sent_at DESC""",
+            (user_id, digest_type, cutoff),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows if row[0]]
 
     async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
         """Get when the last digest of given type was sent."""
@@ -4318,6 +4362,10 @@ class PostgresStorage(BaseStorage):
             );
             CREATE INDEX IF NOT EXISTS idx_digest_history_user_id ON digest_history(user_id);
             CREATE INDEX IF NOT EXISTS idx_digest_history_sent_at ON digest_history(sent_at);
+            """,
+            # Migration 25: Add topics_summary to digest_history for deduplication
+            """
+            ALTER TABLE digest_history ADD COLUMN IF NOT EXISTS topics_summary TEXT;
             """,
         ]
 
@@ -6036,25 +6084,48 @@ class PostgresStorage(BaseStorage):
         return [self._row_to_download(row) for row in rows]
 
     async def add_digest_history(
-        self, user_id: int, digest_type: str, content_hash: str
+        self,
+        user_id: int,
+        digest_type: str,
+        content_hash: str,
+        topics_summary: str | None = None,
     ) -> DigestHistory:
         """Record a digest delivery."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO digest_history (user_id, digest_type, content_hash, sent_at)
-                   VALUES ($1, $2, $3, NOW())
+                """INSERT INTO digest_history (user_id, digest_type, content_hash, topics_summary, sent_at)
+                   VALUES ($1, $2, $3, $4, NOW())
                    RETURNING *""",
                 user_id,
                 digest_type,
                 content_hash,
+                topics_summary,
             )
         return DigestHistory(
             id=row["id"],
             user_id=row["user_id"],
             digest_type=row["digest_type"],
             content_hash=row["content_hash"],
+            topics_summary=row.get("topics_summary"),
             sent_at=row["sent_at"],
         )
+
+    async def get_recent_digest_topics(
+        self, user_id: int, days: int = 3, digest_type: str = "daily"
+    ) -> list[str]:
+        """Get topics from recent daily digests to avoid repetition."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT topics_summary FROM digest_history
+                   WHERE user_id = $1 AND digest_type = $2
+                     AND sent_at >= NOW() - INTERVAL '1 day' * $3
+                     AND topics_summary IS NOT NULL
+                   ORDER BY sent_at DESC""",
+                user_id,
+                digest_type,
+                days,
+            )
+        return [row["topics_summary"] for row in rows if row["topics_summary"]]
 
     async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
         """Get when the last digest of given type was sent."""

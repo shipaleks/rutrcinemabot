@@ -88,6 +88,10 @@ async def collect_digest_data(user_id: int) -> dict[str, Any]:
             for b in blocklist
         ]
 
+        # Recent digest topics (to avoid repetition in daily digests)
+        recent_topics = await storage.get_recent_digest_topics(user_id, days=3, digest_type="daily")
+        data["recent_topics"] = recent_topics
+
         # User preferences
         prefs = await storage.get_preferences(user_id)
         if prefs:
@@ -176,7 +180,7 @@ async def generate_digest(
     user_id: int,
     telegram_id: int,
     digest_type: str = "daily",
-) -> tuple[str, list[Download]] | None:
+) -> tuple[str, list[Download], str | None] | None:
     """Generate a personalized digest using Claude.
 
     Args:
@@ -185,7 +189,7 @@ async def generate_digest(
         digest_type: "daily" or "weekly"
 
     Returns:
-        Tuple of (digest HTML text, downloads mentioned for follow-up marking)
+        Tuple of (digest HTML text, downloads mentioned, topics summary)
         or None if generation fails
     """
     import anthropic
@@ -228,6 +232,16 @@ async def generate_digest(
             logger.warning("digest_empty_response", user_id=user_id)
             return None
 
+        # Extract topics summary for deduplication
+        import re
+
+        topics_summary = None
+        topics_match = re.search(r"---TOPICS---\s*(.*?)\s*---END---", response, re.DOTALL)
+        if topics_match:
+            topics_summary = topics_match.group(1).strip()
+            # Remove the topics block from the response
+            response = re.sub(r"---TOPICS---.*?---END---", "", response, flags=re.DOTALL).strip()
+
         # Convert markdown links to HTML for Telegram
         from src.bot.streaming import _markdown_to_telegram_html
 
@@ -245,7 +259,7 @@ async def generate_digest(
                             mentioned_downloads.append(dl)
                             break
 
-        return html_text, mentioned_downloads
+        return html_text, mentioned_downloads, topics_summary
 
     except Exception as e:
         logger.exception("digest_generation_failed", user_id=user_id, error=str(e))
@@ -264,6 +278,9 @@ def _build_daily_prompt(data: dict[str, Any], telegram_id: int) -> str:
 ## Контекст пользователя (для фильтрации, НЕ для упоминания в каждом предложении)
 Профиль: {data.get("user_profile", "Нет данных")}
 Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensure_ascii=False)}
+
+### Темы из прошлых дайджестов (НЕ ПОВТОРЯЙ без нового контекста!)
+{json.dumps(data.get("recent_topics", []), ensure_ascii=False)}
 
 ## Данные
 
@@ -294,6 +311,7 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 - НЕ ДОБАВЛЯЙ информацию из своей памяти — она устарела!
 - Если в данных нет свежих новостей — НЕ ВЫДУМЫВАЙ их
 - Любой сериал/фильм "в разработке" из твоей памяти может уже выйти — не упоминай такое без источника
+- НЕ ПОВТОРЯЙ темы из прошлых дайджестов, если нет НОВОГО развития событий
 
 1. Выбери 3-5 объективно интересных тем ТОЛЬКО из данных выше
 2. Пиши как новостной дайджест, а НЕ как персональные рекомендации
@@ -305,7 +323,12 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 8. Если есть скачивания без отзыва — можно ОДИН РАЗ мимоходом спросить в конце
 9. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ используй Markdown
 10. Эмодзи только структурные: 📰 🎬 📺 💿 📅. Не для эмоций
-11. Максимум 1500 символов"""
+11. Максимум 1500 символов
+
+## ОБЯЗАТЕЛЬНО в конце добавь блок:
+---TOPICS---
+[список ключевых тем через запятую: названия фильмов, сериалов, персон, событий]
+---END---"""
 
 
 def _build_weekly_prompt(data: dict[str, Any], telegram_id: int) -> str:
@@ -372,7 +395,12 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 5. Можно иметь мнение — это авторский дайджест, не нейтральная лента новостей
 6. Если есть скачивания без отзыва — мимоходом спроси в конце
 7. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ Markdown
-8. Эмодзи только структурные. Максимум 3500 символов"""
+8. Эмодзи только структурные. Максимум 3500 символов
+
+## ОБЯЗАТЕЛЬНО в конце добавь блок:
+---TOPICS---
+[список ключевых тем через запятую: названия фильмов, сериалов, персон, событий]
+---END---"""
 
 
 async def pick_download_for_feedback(user_id: int) -> Download | None:
@@ -454,7 +482,7 @@ async def send_digest(
         logger.warning("digest_generation_returned_none", user_id=user_id)
         return False
 
-    html_text, mentioned_downloads = result
+    html_text, mentioned_downloads, topics_summary = result
 
     # Add frequency selection buttons if this is the first digest
     async with get_storage() as storage:
@@ -500,11 +528,13 @@ async def send_digest(
             logger.error("digest_send_failed", user_id=user_id, error=str(e))
             return False
 
-    # Record digest history
+    # Record digest history with topics for deduplication
     async with get_storage() as storage:
         data = await collect_digest_data(user_id)
         content_hash = compute_content_hash(data)
-        await storage.add_digest_history(user_id, digest_type, content_hash)
+        await storage.add_digest_history(
+            user_id, digest_type, content_hash, topics_summary=topics_summary
+        )
 
         # Mark mentioned downloads as followed up
         for dl in mentioned_downloads:
