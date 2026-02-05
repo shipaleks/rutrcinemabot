@@ -61,6 +61,30 @@ def _add_cache_control_to_tools(tools: list[dict[str, Any]]) -> list[dict[str, A
 # Default Claude model
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 
+# Models that support adaptive thinking (type: "adaptive" + effort)
+_ADAPTIVE_THINKING_MODELS = {"claude-opus-4-6"}
+
+
+def _supports_adaptive_thinking(model: str) -> bool:
+    """Check if the model supports adaptive thinking mode."""
+    return model in _ADAPTIVE_THINKING_MODELS
+
+
+def _budget_to_effort(budget: int) -> str:
+    """Map thinking budget to effort level for adaptive thinking.
+
+    Args:
+        budget: Thinking budget in tokens.
+
+    Returns:
+        Effort level string for the API.
+    """
+    if budget <= 1024:
+        return "low"
+    if budget <= 5120:
+        return "medium"
+    return "high"
+
 
 @dataclass
 class Message:
@@ -395,9 +419,16 @@ class ClaudeClient:
             recent_downloads=context.recent_downloads,
         )
 
-        # Check if thinking can be enabled (requires compatible history)
+        # Determine thinking configuration
+        use_adaptive = _supports_adaptive_thinking(self.model)
         effective_thinking_budget = self.thinking_budget
-        if effective_thinking_budget > 0 and not context.has_thinking_compatible_history():
+
+        # Adaptive thinking doesn't require compatible history; manual mode does
+        if (
+            effective_thinking_budget > 0
+            and not use_adaptive
+            and not context.has_thinking_compatible_history()
+        ):
             logger.warning(
                 "thinking_disabled_incompatible_history",
                 requested_budget=self.thinking_budget,
@@ -416,20 +447,27 @@ class ClaudeClient:
         if self.tools:
             params["tools"] = _add_cache_control_to_tools(self.tools)
 
-        # Add extended thinking if enabled and history is compatible
+        # Add thinking configuration
         if effective_thinking_budget > 0:
-            params["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": effective_thinking_budget,
-            }
-            # Extended thinking requires higher max_tokens
-            params["max_tokens"] = max(max_tokens, effective_thinking_budget + 4096)
+            if use_adaptive:
+                # Opus 4.6+: adaptive thinking with effort control
+                params["thinking"] = {"type": "adaptive"}
+                params["output_config"] = {"effort": _budget_to_effort(effective_thinking_budget)}
+                params["max_tokens"] = max(max_tokens, 16384)
+            else:
+                # Older models: manual thinking with budget_tokens
+                params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": effective_thinking_budget,
+                }
+                params["max_tokens"] = max(max_tokens, effective_thinking_budget + 4096)
 
         logger.debug(
             "sending_message",
             message_length=len(user_message),
             history_length=len(context.messages),
             thinking_enabled=effective_thinking_budget > 0,
+            adaptive=use_adaptive,
         )
 
         try:
@@ -543,14 +581,16 @@ class ClaudeClient:
             )
 
             # Update params and continue conversation
-            # Check if response has thinking blocks to decide whether to keep thinking enabled
             has_thinking = any(block.type == "thinking" for block in response.content)
             continuation_params = params.copy()
-            # Only disable thinking if response didn't have thinking blocks
-            if "thinking" in continuation_params and not has_thinking:
+
+            if _supports_adaptive_thinking(self.model):
+                # Adaptive thinking: always keep thinking config in continuations
+                continuation_params["messages"] = context.get_messages_for_api()
+            elif "thinking" in continuation_params and not has_thinking:
+                # Manual thinking: disable if response didn't have thinking blocks
                 del continuation_params["thinking"]
                 continuation_params["max_tokens"] = 16384
-                # Strip thinking blocks from messages when thinking is disabled
                 continuation_params["messages"] = context.get_messages_for_api(strip_thinking=True)
             else:
                 continuation_params["messages"] = context.get_messages_for_api()
@@ -641,9 +681,16 @@ class ClaudeClient:
             recent_downloads=context.recent_downloads,
         )
 
-        # Check if thinking can be enabled (requires compatible history)
+        # Determine thinking configuration
+        use_adaptive = _supports_adaptive_thinking(self.model)
         effective_thinking_budget = self.thinking_budget
-        if effective_thinking_budget > 0 and not context.has_thinking_compatible_history():
+
+        # Adaptive thinking doesn't require compatible history; manual mode does
+        if (
+            effective_thinking_budget > 0
+            and not use_adaptive
+            and not context.has_thinking_compatible_history()
+        ):
             logger.warning(
                 "thinking_disabled_incompatible_history_stream",
                 requested_budget=self.thinking_budget,
@@ -662,20 +709,27 @@ class ClaudeClient:
         if self.tools:
             params["tools"] = _add_cache_control_to_tools(self.tools)
 
-        # Add extended thinking if enabled and history is compatible
+        # Add thinking configuration
         if effective_thinking_budget > 0:
-            params["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": effective_thinking_budget,
-            }
-            # Extended thinking requires higher max_tokens
-            params["max_tokens"] = max(max_tokens, effective_thinking_budget + 4096)
+            if use_adaptive:
+                # Opus 4.6+: adaptive thinking with effort control
+                params["thinking"] = {"type": "adaptive"}
+                params["output_config"] = {"effort": _budget_to_effort(effective_thinking_budget)}
+                params["max_tokens"] = max(max_tokens, 16384)
+            else:
+                # Older models: manual thinking with budget_tokens
+                params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": effective_thinking_budget,
+                }
+                params["max_tokens"] = max(max_tokens, effective_thinking_budget + 4096)
 
         logger.debug(
             "starting_stream",
             message_length=len(user_message),
             history_length=len(context.messages),
             thinking_enabled=effective_thinking_budget > 0,
+            adaptive=use_adaptive,
         )
 
         try:
@@ -776,13 +830,16 @@ class ClaudeClient:
                     ],
                 )
 
-                # Continue conversation - keep thinking if response had thinking blocks
+                # Continue conversation
                 continuation_params = params.copy()
-                # Only disable thinking if response didn't have thinking blocks
-                if "thinking" in continuation_params and not has_thinking:
+
+                if _supports_adaptive_thinking(self.model):
+                    # Adaptive thinking: always keep thinking config in continuations
+                    continuation_params["messages"] = context.get_messages_for_api()
+                elif "thinking" in continuation_params and not has_thinking:
+                    # Manual thinking: disable if response didn't have thinking blocks
                     del continuation_params["thinking"]
                     continuation_params["max_tokens"] = 16384
-                    # Strip thinking blocks from messages when thinking is disabled
                     continuation_params["messages"] = context.get_messages_for_api(
                         strip_thinking=True
                     )

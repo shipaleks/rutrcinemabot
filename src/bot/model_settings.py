@@ -49,11 +49,13 @@ MODELS = {
 }
 
 # Thinking budget options (0 = disabled)
+# "budget" is used for manual thinking (Sonnet/Haiku 4.5)
+# "effort" is used for adaptive thinking (Opus 4.6+)
 THINKING_LEVELS = {
-    "off": {"budget": 0, "name": "Выкл", "description": "Стандартные ответы"},
-    "low": {"budget": 1024, "name": "Низкий", "description": "1K токенов"},
-    "medium": {"budget": 5120, "name": "Средний", "description": "5K токенов"},
-    "high": {"budget": 10240, "name": "Высокий", "description": "10K токенов"},
+    "off": {"budget": 0, "effort": None, "name": "Выкл", "description": "Стандартные ответы"},
+    "low": {"budget": 1024, "effort": "low", "name": "Низкий", "description": "Минимум"},
+    "medium": {"budget": 5120, "effort": "medium", "name": "Средний", "description": "Баланс"},
+    "high": {"budget": 10240, "effort": "high", "name": "Высокий", "description": "Максимум"},
 }
 
 

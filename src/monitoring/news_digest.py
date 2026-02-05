@@ -205,14 +205,11 @@ async def generate_digest(
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
 
         if digest_type == "weekly":
-            # Weekly digest uses Opus with extended thinking for deeper analysis
+            # Weekly digest uses Opus with adaptive thinking for deeper analysis
             message = await client.messages.create(
                 model="claude-opus-4-6",
                 max_tokens=16000,
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": 10000,
-                },
+                thinking={"type": "adaptive"},
                 messages=[{"role": "user", "content": prompt}],
             )
         else:
