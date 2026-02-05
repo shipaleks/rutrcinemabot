@@ -313,6 +313,60 @@ async def reset_profile_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Не удалось очистить профиль. Попробуйте позже.")
 
 
+async def digest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /digest command.
+
+    Generates and sends a personalized news digest on demand.
+    Usage: /digest [daily|weekly]
+
+    Args:
+        update: Telegram update object
+        context: Callback context
+    """
+
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    logger.info("digest_command", user_id=user.id)
+
+    # Parse argument: daily or weekly
+    args = context.args if context.args else []
+    digest_type = "daily"
+    if args and args[0].lower() in ("weekly", "week", "еженедельный"):
+        digest_type = "weekly"
+
+    # Send "generating..." message
+    status_msg = await update.message.reply_text(
+        "📰 Генерирую персональный дайджест..."
+        if digest_type == "daily"
+        else "📰 Генерирую еженедельный дайджест (это может занять минуту)..."
+    )
+
+    try:
+        async with get_storage() as storage:
+            db_user = await storage.get_user_by_telegram_id(user.id)
+            if not db_user:
+                await status_msg.edit_text("Сначала настройте профиль через /start")
+                return
+
+            from src.monitoring.news_digest import send_digest
+
+            success = await send_digest(context.bot, db_user.id, user.id, digest_type)
+
+            # Delete the status message after sending digest
+            await status_msg.delete()
+
+            if not success:
+                await update.message.reply_text(
+                    "Не удалось сгенерировать дайджест. Попробуйте позже."
+                )
+
+    except Exception as e:
+        logger.exception("digest_command_failed", user_id=user.id, error=str(e))
+        await status_msg.edit_text("Произошла ошибка. Попробуйте позже.")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle errors that occur during update processing.
 

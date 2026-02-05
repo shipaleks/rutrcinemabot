@@ -23,6 +23,8 @@ from telegram.ext import (
 )
 
 from src.bot.conversation import (
+    handle_digest_callback,
+    handle_digest_feedback_callback,
     handle_download_callback,
     handle_followup_callback,
     handle_magnet_callback,
@@ -31,7 +33,13 @@ from src.bot.conversation import (
     handle_seedbox_callback,
     handle_torrent_callback,
 )
-from src.bot.handlers import error_handler, help_handler, profile_handler, reset_profile_handler
+from src.bot.handlers import (
+    digest_handler,
+    error_handler,
+    help_handler,
+    profile_handler,
+    reset_profile_handler,
+)
 from src.bot.library import library_callback, library_command, library_search_handler
 from src.bot.onboarding import (
     get_onboarding_conversation_handler,
@@ -92,6 +100,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("profile", profile_handler))
     application.add_handler(CommandHandler("settings", settings_handler))
     application.add_handler(CommandHandler("reset_profile", reset_profile_handler))
+    application.add_handler(CommandHandler("digest", digest_handler))
     application.add_handler(CommandHandler("health", health_check))
 
     # Register Rutracker credentials conversation handler
@@ -119,8 +128,14 @@ def create_application() -> Application:
     application.add_handler(CallbackQueryHandler(handle_torrent_callback, pattern="^dl_torrent_"))
     application.add_handler(CallbackQueryHandler(handle_seedbox_callback, pattern="^dl_seedbox_"))
 
-    # Register follow-up handlers for download feedback
+    # Register follow-up handlers for download feedback (legacy — kept for old buttons)
     application.add_handler(CallbackQueryHandler(handle_followup_callback, pattern="^followup_"))
+
+    # Register digest frequency selection handlers
+    application.add_handler(CallbackQueryHandler(handle_digest_callback, pattern="^digest_freq_"))
+
+    # Register digest feedback handlers (like/dislike/later for downloaded content)
+    application.add_handler(CallbackQueryHandler(handle_digest_feedback_callback, pattern="^dfb_"))
 
     # Register library browser handlers
     application.add_handler(CommandHandler("library", library_command))

@@ -1245,6 +1245,220 @@ class TMDBClient:
         return upcoming
 
     # =========================================================================
+    # Digest Data Methods
+    # =========================================================================
+
+    async def get_trending(
+        self,
+        media_type: str = "all",
+        time_window: str = "day",
+    ) -> list[dict[str, Any]]:
+        """Get trending movies and TV shows.
+
+        Args:
+            media_type: "all", "movie", or "tv"
+            time_window: "day" or "week"
+
+        Returns:
+            List of trending items with id, title, media_type, overview, vote_average
+        """
+        data = await self._request(f"/trending/{media_type}/{time_window}")
+        results = []
+        for item in data.get("results", [])[:20]:
+            mt = item.get("media_type", media_type)
+            if mt == "person":
+                continue
+            title = item.get("title") or item.get("name", "")
+            original = item.get("original_title") or item.get("original_name", "")
+            release = item.get("release_date") or item.get("first_air_date", "")
+            results.append(
+                {
+                    "id": item.get("id"),
+                    "media_type": mt,
+                    "title": title,
+                    "original_title": original,
+                    "overview": item.get("overview", "")[:200],
+                    "vote_average": item.get("vote_average", 0),
+                    "release_date": release,
+                    "popularity": item.get("popularity", 0),
+                }
+            )
+        logger.info("tmdb_get_trending", media_type=media_type, count=len(results))
+        return results
+
+    async def get_now_playing(self, page: int = 1) -> list[dict[str, Any]]:
+        """Get movies currently in theaters.
+
+        Args:
+            page: Page number
+
+        Returns:
+            List of now-playing movies
+        """
+        data = await self._request("/movie/now_playing", params={"page": page})
+        results = []
+        for item in data.get("results", [])[:15]:
+            results.append(
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "original_title": item.get("original_title", ""),
+                    "overview": item.get("overview", "")[:200],
+                    "release_date": item.get("release_date", ""),
+                    "vote_average": item.get("vote_average", 0),
+                    "popularity": item.get("popularity", 0),
+                }
+            )
+        logger.info("tmdb_get_now_playing", count=len(results))
+        return results
+
+    async def get_upcoming_movies(self, page: int = 1) -> list[dict[str, Any]]:
+        """Get upcoming movie releases.
+
+        Args:
+            page: Page number
+
+        Returns:
+            List of upcoming movies
+        """
+        data = await self._request("/movie/upcoming", params={"page": page})
+        results = []
+        for item in data.get("results", [])[:15]:
+            results.append(
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "original_title": item.get("original_title", ""),
+                    "overview": item.get("overview", "")[:200],
+                    "release_date": item.get("release_date", ""),
+                    "vote_average": item.get("vote_average", 0),
+                    "popularity": item.get("popularity", 0),
+                }
+            )
+        logger.info("tmdb_get_upcoming", count=len(results))
+        return results
+
+    async def discover_anniversary_movies(
+        self,
+        target_date: str,
+        anniversaries: list[int] | None = None,
+        min_vote_average: float = 7.0,
+        min_vote_count: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Find notable movies released on this date in history.
+
+        Args:
+            target_date: Date to check (MM-DD format)
+            anniversaries: List of years ago to check (default: [10, 15, 20, 25, 30, 35, 40, 50])
+            min_vote_average: Minimum rating filter
+            min_vote_count: Minimum vote count filter
+
+        Returns:
+            List of anniversary movies with years_ago field
+        """
+        from datetime import date
+
+        if anniversaries is None:
+            anniversaries = [10, 15, 20, 25, 30, 35, 40, 50]
+
+        today = date.today()
+        month_day = target_date  # MM-DD
+
+        results = []
+        for years_ago in anniversaries:
+            year = today.year - years_ago
+            release_date = f"{year}-{month_day}"
+
+            # Search for movies released in a 7-day window around the date
+            try:
+                data = await self._request(
+                    "/discover/movie",
+                    params={
+                        "primary_release_date.gte": release_date,
+                        "primary_release_date.lte": f"{year}-{month_day}",
+                        "vote_average.gte": min_vote_average,
+                        "vote_count.gte": min_vote_count,
+                        "sort_by": "vote_average.desc",
+                    },
+                )
+                for item in data.get("results", [])[:3]:
+                    results.append(
+                        {
+                            "id": item.get("id"),
+                            "title": item.get("title", ""),
+                            "original_title": item.get("original_title", ""),
+                            "release_date": item.get("release_date", ""),
+                            "vote_average": item.get("vote_average", 0),
+                            "overview": item.get("overview", "")[:200],
+                            "years_ago": years_ago,
+                        }
+                    )
+            except Exception as e:
+                logger.debug("anniversary_search_failed", year=year, error=str(e))
+
+        # Sort by vote_average descending
+        results.sort(key=lambda x: x.get("vote_average", 0), reverse=True)
+        logger.info("tmdb_discover_anniversary", date=target_date, count=len(results))
+        return results[:5]
+
+    async def is_adult_content(self, tmdb_id: int, media_type: str = "movie") -> bool:
+        """Check if content is marked as adult on TMDB.
+
+        Args:
+            tmdb_id: TMDB ID
+            media_type: "movie" or "tv"
+
+        Returns:
+            True if content is adult-only
+        """
+        try:
+            endpoint = f"/{media_type}/{tmdb_id}"
+            data = await self._request(endpoint)
+            return data.get("adult", False)
+        except Exception:
+            # If we can't check, assume not adult (err on side of asking)
+            return False
+
+    async def get_recently_released_digital(self) -> list[dict[str, Any]]:
+        """Get movies recently released digitally (released 30-90 days ago).
+
+        Movies in this window are typically available for digital download.
+
+        Returns:
+            List of recently released movies likely available digitally
+        """
+        from datetime import date, timedelta
+
+        today = date.today()
+        end_date = (today - timedelta(days=30)).isoformat()
+        start_date = (today - timedelta(days=90)).isoformat()
+
+        data = await self._request(
+            "/discover/movie",
+            params={
+                "primary_release_date.gte": start_date,
+                "primary_release_date.lte": end_date,
+                "vote_count.gte": 100,
+                "sort_by": "popularity.desc",
+            },
+        )
+        results = []
+        for item in data.get("results", [])[:15]:
+            results.append(
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "original_title": item.get("original_title", ""),
+                    "release_date": item.get("release_date", ""),
+                    "vote_average": item.get("vote_average", 0),
+                    "overview": item.get("overview", "")[:200],
+                    "popularity": item.get("popularity", 0),
+                }
+            )
+        logger.info("tmdb_get_recently_digital", count=len(results))
+        return results
+
+    # =========================================================================
     # Cache Management
     # =========================================================================
 

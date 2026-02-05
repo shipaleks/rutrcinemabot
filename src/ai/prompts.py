@@ -24,6 +24,7 @@ def get_system_prompt_blocks(
     blocklist_items: list[dict[str, str]] | None = None,
     core_memory_content: str | None = None,
     remember_requested: bool = False,
+    recent_downloads: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Get the system prompt as content blocks with cache_control markers.
 
@@ -40,6 +41,7 @@ def get_system_prompt_blocks(
         blocklist_items: List of blocked items for strict filtering
         core_memory_content: Rendered core memory blocks (new memory system)
         remember_requested: User explicitly asked to save with #запомни
+        recent_downloads: Recent unreviewed downloads for natural follow-up
 
     Returns:
         List of system content blocks for the Anthropic API.
@@ -68,6 +70,7 @@ def get_system_prompt_blocks(
         blocklist_items=blocklist_items,
         core_memory_content=core_memory_content,
         remember_requested=remember_requested,
+        recent_downloads=recent_downloads,
     )
 
     if dynamic_parts:
@@ -82,6 +85,7 @@ def _build_dynamic_context(
     blocklist_items: list[dict[str, str]] | None = None,
     core_memory_content: str | None = None,
     remember_requested: bool = False,
+    recent_downloads: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the dynamic user context string.
 
@@ -153,6 +157,22 @@ def _build_dynamic_context(
             level = item.get("level", "dont_recommend")
             level_marker = "🚫" if level == "never_mention" else "⛔"
             context_parts.append(f"- {level_marker} {block_type}: {block_value}")
+
+    # Add recent unreviewed downloads for natural follow-up in conversation
+    if recent_downloads:
+        context_parts.append("\n\n## 📥 Недавние скачивания (без отзыва)")
+        context_parts.append(
+            "Пользователь скачал эти фильмы/сериалы, но ещё не поделился мнением. "
+            "Если уместно в контексте разговора, мимоходом спроси про один из них — "
+            "например: «Кстати, как вам X?» или «Успели посмотреть Y?». "
+            "НЕ навязывай — спроси один раз, естественно. Если пользователь ответит, "
+            "используй `rate_content` или `create_memory_note` чтобы запомнить мнение."
+        )
+        for dl in recent_downloads[:5]:
+            title = dl.get("title", "")
+            days_ago = dl.get("days_ago", "?")
+            media = dl.get("media_type", "")
+            context_parts.append(f"- {title} ({media}, скачано {days_ago} дн. назад)")
 
     return "".join(context_parts)
 

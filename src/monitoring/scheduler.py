@@ -43,9 +43,13 @@ SCHEDULER_RUN_INTERVAL_HOURS = 2
 MEMORY_ARCHIVAL_INTERVAL_HOURS = 24  # Run once daily
 LEARNING_DETECTION_INTERVAL_HOURS = 12  # Run twice daily
 
-# Follow-up intervals
-FOLLOWUP_CHECK_INTERVAL_HOURS = 6  # Check for pending follow-ups 4 times daily
-FOLLOWUP_DAYS_THRESHOLD = 3  # Days after download before sending follow-up
+# Follow-up intervals (DEPRECATED — follow-ups now happen naturally in digests/conversations)
+# FOLLOWUP_CHECK_INTERVAL_HOURS = 6
+# FOLLOWUP_DAYS_THRESHOLD = 3
+
+# Digest settings
+DIGEST_HOUR = 19  # Send digests at 19:00 Moscow time
+WEEKLY_DIGEST_DAYS = (1, 4)  # Tuesday=1, Friday=4 (Monday=0)
 
 # Proactive push intervals
 DIRECTOR_RELEASES_CHECK_HOURS = 168  # Check once per week (7 * 24)
@@ -229,12 +233,12 @@ class MonitoringScheduler:
             max_instances=1,
         )
 
-        # Add download follow-up job - check every 6 hours
+        # Add personalized digest job - fires once daily at 19:00 Moscow time
         self._scheduler.add_job(
-            self._check_pending_followups,
-            trigger=IntervalTrigger(hours=FOLLOWUP_CHECK_INTERVAL_HOURS),
-            id="download_followups",
-            name="Download Follow-ups",
+            self._send_pending_digests,
+            trigger=CronTrigger(hour=DIGEST_HOUR, minute=0, timezone="Europe/Moscow"),
+            id="news_digest",
+            name="Personalized News Digest",
             replace_existing=True,
             max_instances=1,
         )
@@ -786,103 +790,70 @@ class MonitoringScheduler:
             )
             return False
 
-    async def _check_pending_followups(self) -> None:
-        """Check for downloads that need follow-up and send notifications.
+    async def _send_pending_digests(self) -> None:
+        """Send digests to users who need them.
 
-        Sends "Did you like it?" messages for downloads older than FOLLOWUP_DAYS_THRESHOLD
-        that haven't been followed up yet.
+        Fires once daily at 19:00 Moscow time via CronTrigger.
+        - daily subscribers: get a digest every run
+        - weekly subscribers: get a digest on Tuesday and Friday only
+        - new users (freq='none'): get one trial digest to choose frequency
         """
-        logger.info("followup_check_started")
+        logger.info("digest_check_started")
 
         try:
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            from src.monitoring.news_digest import send_digest
+
+            today_weekday = datetime.now(UTC).weekday()
 
             async with get_storage() as storage:
-                # Get downloads that need follow-up
-                pending = await storage.get_pending_followups(days=FOLLOWUP_DAYS_THRESHOLD)
+                users = await storage.get_all_users(limit=1000)
 
-                if not pending:
-                    logger.debug("followup_check_no_pending")
-                    return
-
-                logger.info("followup_pending_found", count=len(pending))
-
-                for download in pending:
+                sent_count = 0
+                for user in users:
                     try:
-                        # Get user's telegram_id
-                        user = await storage.get_user(download.user_id)
-                        if not user:
+                        prefs = await storage.get_preferences(user.id)
+                        if prefs and not prefs.notification_enabled:
                             continue
 
-                        # Format the follow-up message
-                        title = download.title
-                        if download.season and download.episode:
-                            title += f" S{download.season:02d}E{download.episode:02d}"
-                        elif download.season:
-                            title += f" S{download.season:02d}"
+                        freq = prefs.digest_frequency if prefs else "none"
 
-                        safe_title = self._escape_markdown(title)
-                        message = (
-                            f"🎬 Ты скачал *{safe_title}* несколько дней назад.\n\nПонравилось?"
+                        # Determine what to send
+                        digest_type: str | None = None
+
+                        if freq == "daily":
+                            digest_type = "daily"
+
+                        elif freq == "weekly" and today_weekday in WEEKLY_DIGEST_DAYS:
+                            digest_type = "weekly"
+
+                        elif freq == "none":
+                            # Trial digest for users who haven't chosen yet
+                            last_any = await storage.get_last_digest_time(user.id, "daily")
+                            if last_any is None:
+                                last_weekly = await storage.get_last_digest_time(user.id, "weekly")
+                                if last_weekly is None:
+                                    digest_type = "daily"
+
+                        if digest_type is None:
+                            continue
+
+                        success = await send_digest(
+                            self._bot, user.id, user.telegram_id, digest_type
                         )
-
-                        # Create inline keyboard
-                        buttons = [
-                            [
-                                InlineKeyboardButton(
-                                    "👍 Да",
-                                    callback_data=f"followup_yes_{download.id}",
-                                ),
-                                InlineKeyboardButton(
-                                    "👎 Нет",
-                                    callback_data=f"followup_no_{download.id}",
-                                ),
-                            ],
-                            [
-                                InlineKeyboardButton(
-                                    "📝 Оценить 1-10",
-                                    callback_data=f"followup_rate_{download.id}",
-                                ),
-                            ],
-                        ]
-                        keyboard = InlineKeyboardMarkup(buttons)
-
-                        # Send the message with Markdown fallback
-                        try:
-                            await self._bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=message,
-                                parse_mode="Markdown",
-                                reply_markup=keyboard,
-                            )
-                        except Exception:
-                            await self._bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=f"🎬 Ты скачал {title} несколько дней назад.\n\nПонравилось?",
-                                reply_markup=keyboard,
-                            )
-
-                        # Mark as sent
-                        await storage.mark_followup_sent(download.id)
-
-                        logger.info(
-                            "followup_sent",
-                            user_id=user.id,
-                            download_id=download.id,
-                            title=download.title,
-                        )
+                        if success:
+                            sent_count += 1
 
                     except Exception as e:
                         logger.warning(
-                            "followup_send_failed",
-                            download_id=download.id,
+                            "digest_user_failed",
+                            user_id=user.id,
                             error=str(e),
                         )
 
-                logger.info("followup_check_completed", sent=len(pending))
+                logger.info("digest_check_completed", sent=sent_count)
 
         except Exception as e:
-            logger.exception("followup_check_failed", error=str(e))
+            logger.exception("digest_check_failed", error=str(e))
 
     async def _check_director_releases(self) -> None:
         """Check for new movies from favorite directors.
