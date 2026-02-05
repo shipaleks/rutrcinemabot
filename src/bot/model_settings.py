@@ -5,10 +5,10 @@ This module provides:
 - Inline keyboard for model selection
 - Persistent storage of user preferences
 
-Available models (all 4.5 generation):
+Available models:
 - Haiku 4.5: Fast, cheap, good for simple tasks
 - Sonnet 4.5: Balanced speed/quality (default)
-- Opus 4.5: Best quality, slower
+- Opus 4.6: Best quality, slower
 
 Thinking levels:
 - Off: Standard responses (default)
@@ -26,7 +26,7 @@ from src.user.storage import get_storage
 
 logger = structlog.get_logger(__name__)
 
-# Available Claude models (all 4.5 generation)
+# Available Claude models
 MODELS = {
     "haiku": {
         "id": "claude-haiku-4-5-20251001",
@@ -41,8 +41,8 @@ MODELS = {
         "emoji": "",
     },
     "opus": {
-        "id": "claude-opus-4-5-20251101",
-        "name": "Opus 4.5",
+        "id": "claude-opus-4-6",
+        "name": "Opus 4.6",
         "description": "Лучшее качество, медленнее",
         "emoji": "",
     },
