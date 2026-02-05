@@ -207,7 +207,7 @@ async def generate_digest(
         if digest_type == "weekly":
             # Weekly digest uses Opus with extended thinking for deeper analysis
             message = await client.messages.create(
-                model="claude-opus-4-5-20251101",
+                model="claude-opus-4-6",
                 max_tokens=16000,
                 thinking={
                     "type": "enabled",
