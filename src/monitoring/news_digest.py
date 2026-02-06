@@ -283,6 +283,7 @@ def _build_daily_prompt(data: dict[str, Any], telegram_id: int) -> str:
     """Build the prompt for daily digest generation."""
     bot_username = settings.bot_username
     today = date.today()
+    prefs_json = json.dumps(data.get("preferences", {}), ensure_ascii=False)
 
     return f"""Ты — ведущий вечернего кинобрифинга. Стиль: неформальный, информативный, без восторгов и канцеляризмов.
 
@@ -304,7 +305,7 @@ def _build_daily_prompt(data: dict[str, Any], telegram_id: int) -> str:
 {json.dumps(data.get("watchlist", []), ensure_ascii=False)}
 
 ### Предпочтения
-{json.dumps(data.get("preferences", {{}}), ensure_ascii=False)}
+{prefs_json}
 
 Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensure_ascii=False)}
 
@@ -364,6 +365,7 @@ def _build_weekly_prompt(data: dict[str, Any], telegram_id: int) -> str:
     """Build the prompt for weekly digest generation."""
     bot_username = settings.bot_username
     today = date.today()
+    prefs_json = json.dumps(data.get("preferences", {}), ensure_ascii=False)
 
     return f"""Ты — ведущий еженедельного кинодайджеста в стиле подкастов The Town / The Big Picture:
 обстоятельный, с контекстом и авторским мнением, но без занудства. Это кураторский обзор недели.
@@ -384,7 +386,7 @@ def _build_weekly_prompt(data: dict[str, Any], telegram_id: int) -> str:
 {json.dumps(data.get("watchlist", []), ensure_ascii=False)}
 
 ### Предпочтения
-{json.dumps(data.get("preferences", {{}}), ensure_ascii=False)}
+{prefs_json}
 
 Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensure_ascii=False)}
 
