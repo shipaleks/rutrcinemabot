@@ -48,20 +48,36 @@ async def collect_digest_data(user_id: int) -> dict[str, Any]:
     today = date.today()
 
     async with get_storage() as storage:
-        # User profile context
+        # User profile context — use formatted rendering (same as conversation)
         memory_manager = CoreMemoryManager(storage)
         blocks = await memory_manager.get_all_blocks(user_id)
-        profile_context = ""
-        for block in blocks:
-            if block.content:
-                profile_context += f"\n{block.block_name}: {block.content}"
-        data["user_profile"] = profile_context
+        data["user_profile"] = memory_manager.render_blocks_for_context(blocks)
 
         # Recent watch history
         watched = await storage.get_watched(user_id, limit=20)
         data["recent_watched"] = [
             {"title": w.title, "rating": w.rating, "media_type": w.media_type} for w in watched
         ]
+
+        # Favorites: highly rated items (strongest taste signal)
+        all_watched = await storage.get_watched(user_id, limit=100)
+        data["favorites"] = [
+            {
+                "title": w.title,
+                "rating": w.rating,
+                "media_type": w.media_type,
+                "year": w.year,
+            }
+            for w in all_watched
+            if w.rating and w.rating >= 8
+        ][:15]
+
+        # Low-rated items (what to avoid)
+        data["disliked"] = [
+            {"title": w.title, "rating": w.rating, "media_type": w.media_type}
+            for w in all_watched
+            if w.rating and w.rating <= 4
+        ][:10]
 
         # Recent unreviewed downloads (for natural follow-up)
         downloads = await storage.get_recent_unreviewed_downloads(user_id, days=14)
@@ -272,8 +288,24 @@ def _build_daily_prompt(data: dict[str, Any], telegram_id: int) -> str:
 
 Напиши короткий дайджест (3-5 тем).
 
-## Контекст пользователя (для фильтрации, НЕ для упоминания в каждом предложении)
-Профиль: {data.get("user_profile", "Нет данных")}
+## Контекст пользователя (для фильтрации и выбора тем, НЕ для упоминания)
+{data.get("user_profile", "Нет данных")}
+
+### Любимое (оценки 8+, это вкус пользователя)
+{json.dumps(data.get("favorites", []), ensure_ascii=False)}
+
+### Не понравилось (оценки 1-4, избегай похожего)
+{json.dumps(data.get("disliked", []), ensure_ascii=False)}
+
+### Недавно смотрел
+{json.dumps(data.get("recent_watched", [])[:10], ensure_ascii=False)}
+
+### Хочет посмотреть (watchlist)
+{json.dumps(data.get("watchlist", []), ensure_ascii=False)}
+
+### Предпочтения
+{json.dumps(data.get("preferences", {{}}), ensure_ascii=False)}
+
 Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensure_ascii=False)}
 
 ### Темы из прошлых дайджестов (НЕ ПОВТОРЯЙ без нового контекста!)
@@ -336,9 +368,24 @@ def _build_weekly_prompt(data: dict[str, Any], telegram_id: int) -> str:
     return f"""Ты — ведущий еженедельного кинодайджеста в стиле подкастов The Town / The Big Picture:
 обстоятельный, с контекстом и авторским мнением, но без занудства. Это кураторский обзор недели.
 
-## Контекст пользователя (для фильтрации и глубины, НЕ для упоминания)
-Профиль: {data.get("user_profile", "Нет данных")}
-Недавно смотрел: {json.dumps(data.get("recent_watched", [])[:10], ensure_ascii=False)}
+## Контекст пользователя (для фильтрации, глубины и выбора тем)
+{data.get("user_profile", "Нет данных")}
+
+### Любимое (оценки 8+, это вкус пользователя)
+{json.dumps(data.get("favorites", []), ensure_ascii=False)}
+
+### Не понравилось (оценки 1-4, избегай похожего)
+{json.dumps(data.get("disliked", []), ensure_ascii=False)}
+
+### Недавно смотрел
+{json.dumps(data.get("recent_watched", [])[:10], ensure_ascii=False)}
+
+### Хочет посмотреть (watchlist)
+{json.dumps(data.get("watchlist", []), ensure_ascii=False)}
+
+### Предпочтения
+{json.dumps(data.get("preferences", {{}}), ensure_ascii=False)}
+
 Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensure_ascii=False)}
 
 ## Данные
