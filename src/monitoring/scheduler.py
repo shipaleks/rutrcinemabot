@@ -393,6 +393,11 @@ class MonitoringScheduler:
                     if not monitor:
                         continue
 
+                    # Handle preliminary matches differently
+                    if release.is_preliminary:
+                        await self._handle_preliminary_release(storage, release, monitor)
+                        continue
+
                     # Store found release data for later download via button
                     found_data = {
                         "magnet": release.magnet,
@@ -467,6 +472,170 @@ class MonitoringScheduler:
         )
 
         return found_releases
+
+    async def _handle_preliminary_release(
+        self,
+        storage: Any,
+        release: FoundRelease,
+        monitor: Monitor,
+    ) -> None:
+        """Handle a preliminary quality match (e.g., 1080p found when 4K was target).
+
+        Sends a one-time notification about the available quality, but keeps the
+        monitor active to continue searching for the target quality.
+
+        Args:
+            storage: Storage instance
+            release: Found release with is_preliminary=True
+            monitor: Original monitor
+        """
+        # Check if we already notified about this quality level
+        existing_data = monitor.found_data or {}
+        prev_preliminary_quality = existing_data.get("preliminary_quality")
+
+        if prev_preliminary_quality == release.quality:
+            logger.debug(
+                "preliminary_already_notified",
+                monitor_id=monitor.id,
+                quality=release.quality,
+            )
+            return
+
+        user = await storage.get_user(monitor.user_id)
+        if not user:
+            return
+
+        notified = await self._notify_preliminary(user.telegram_id, release, monitor)
+
+        if notified:
+            # Store preliminary info in found_data, but keep status "active"
+            # so the monitor continues checking for target quality
+            preliminary_data = {
+                "preliminary_quality": release.quality,
+                "preliminary_notified_at": datetime.now(UTC).isoformat(),
+                "preliminary_magnet": release.magnet,
+                "preliminary_size": release.size,
+                "preliminary_seeds": release.seeds,
+                "preliminary_source": release.source,
+                "preliminary_torrent_title": release.torrent_title,
+                # Also store as main fields so Download button works
+                "magnet": release.magnet,
+                "quality": release.quality,
+                "size": release.size,
+                "seeds": release.seeds,
+                "source": release.source,
+                "torrent_title": release.torrent_title,
+            }
+            # Merge with existing found_data if any
+            merged = {**existing_data, **preliminary_data}
+
+            await storage.update_monitor_status(
+                monitor.id,
+                status="active",  # Stay active — keep looking for target quality
+                found_data=merged,
+            )
+
+            logger.info(
+                "preliminary_notification_sent",
+                monitor_id=monitor.id,
+                title=release.title,
+                found_quality=release.quality,
+                target_quality=monitor.quality,
+            )
+
+    async def _notify_preliminary(
+        self,
+        telegram_id: int,
+        release: FoundRelease,
+        monitor: Monitor,
+    ) -> bool:
+        """Send notification about a preliminary quality match.
+
+        Different from the main notification — explains that the found quality
+        is available now, but the target quality should appear later.
+
+        Args:
+            telegram_id: User's Telegram ID
+            release: Found release (preliminary quality)
+            monitor: Original monitor (has target quality)
+
+        Returns:
+            True if sent successfully
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        # Format episode info if available
+        episode_info = ""
+        if monitor.tracking_mode == "episode" and monitor.season_number and monitor.episode_number:
+            episode_info = f" S{monitor.season_number:02d}E{monitor.episode_number:02d}"
+
+        safe_title = self._escape_html(release.title)
+        safe_found_q = self._escape_html(release.quality)
+        safe_target_q = self._escape_html(monitor.quality)
+        safe_size = self._escape_html(release.size)
+        safe_source = self._escape_html(release.source.title())
+
+        message = (
+            f"📢 <b>{safe_title}{episode_info}</b> — появился в {safe_found_q}!\n\n"
+            f"📊 {safe_found_q} | {safe_size} | {release.seeds} сидов\n"
+            f"📡 Источник: {safe_source}\n\n"
+            f"🔍 Ты ждёшь {safe_target_q} — продолжаю мониторить. "
+            f"Версия в {safe_target_q} обычно появляется позже."
+        )
+
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    f"⬇️ Скачать {safe_found_q}",
+                    callback_data=f"monitor_download_{release.monitor_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"⏳ Подожду {safe_target_q}",
+                    callback_data=f"monitor_details_{release.monitor_id}",
+                ),
+            ],
+        ]
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        try:
+            await self._bot.send_message(
+                chat_id=telegram_id,
+                text=message,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            return True
+        except Exception as e:
+            logger.warning(
+                "preliminary_notification_failed",
+                telegram_id=telegram_id,
+                error=str(e),
+            )
+
+        # Fallback: plain text
+        try:
+            plain_message = (
+                f"📢 {release.title}{episode_info} — появился в {release.quality}!\n\n"
+                f"📊 {release.quality} | {release.size} | {release.seeds} сидов\n"
+                f"📡 Источник: {release.source.title()}\n\n"
+                f"🔍 Ты ждёшь {monitor.quality} — продолжаю мониторить."
+            )
+            await self._bot.send_message(
+                chat_id=telegram_id,
+                text=plain_message,
+                reply_markup=keyboard,
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "preliminary_notification_plain_failed",
+                telegram_id=telegram_id,
+                error=str(e),
+            )
+            return False
 
     async def _retry_pending_notification(
         self,

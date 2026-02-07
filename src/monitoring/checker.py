@@ -42,6 +42,7 @@ class FoundRelease:
     seeds: int
     magnet: str
     source: str  # "rutracker", "kinozal", "rutor", "piratebay"
+    is_preliminary: bool = False  # True when quality is acceptable but below target
 
 
 @dataclass
@@ -188,6 +189,80 @@ QUALITY_ALIASES: dict[str, list[str]] = {
     "720p": ["720p", "720i", "hdrip", "web-dl 720", "webdl 720"],
     "HDR": ["hdr10+", "hdr10", "hdr", "dolby vision", "dv"],
 }
+
+
+# Quality tier ordering for comparison (higher = better)
+# Used to determine if a found release is "acceptable but below target"
+QUALITY_TIERS: dict[str, int] = {
+    "720p": 1,
+    "1080p": 2,
+    "4K": 3,
+    "HDR": 4,  # HDR is typically 4K+HDR, so highest tier
+}
+
+# Minimum acceptable quality tier — never suggest below this
+MIN_ACCEPTABLE_TIER = 2  # 1080p
+
+
+def get_quality_tier(quality: str | None) -> int:
+    """Get numeric tier for a quality string.
+
+    Args:
+        quality: Raw or normalized quality string
+
+    Returns:
+        Tier number (higher = better), 0 if unknown
+    """
+    if not quality:
+        return 0
+    normalized = normalize_quality(quality)
+    if normalized:
+        return QUALITY_TIERS.get(normalized, 0)
+    return 0
+
+
+def is_acceptable_quality(quality: str | None, title: str = "") -> bool:
+    """Check if quality is >= 1080p (acceptable for preliminary notification).
+
+    Args:
+        quality: Quality string from result
+        title: Torrent title for fallback detection
+
+    Returns:
+        True if quality is at least 1080p
+    """
+    tier = get_quality_tier(quality)
+    if tier >= MIN_ACCEPTABLE_TIER:
+        return True
+
+    # Fallback: check title for quality indicators >= 1080p
+    title_lower = title.lower()
+    for target_q in ("1080p", "4K", "HDR"):
+        if target_q in QUALITY_ALIASES:
+            for alias in QUALITY_ALIASES[target_q]:
+                if alias in title_lower:
+                    return True
+
+    return False
+
+
+def is_quality_below_target(found_quality: str | None, target_quality: str) -> bool:
+    """Check if found quality is acceptable but below target.
+
+    Args:
+        found_quality: Quality of the found release
+        target_quality: User's target quality
+
+    Returns:
+        True if found is acceptable (>= 1080p) but strictly below target
+    """
+    found_tier = get_quality_tier(found_quality)
+    target_tier = get_quality_tier(target_quality)
+
+    if found_tier == 0 or target_tier == 0:
+        return False
+
+    return found_tier < target_tier and found_tier >= MIN_ACCEPTABLE_TIER
 
 
 def normalize_quality(quality: str | None) -> str | None:
@@ -459,6 +534,31 @@ class ReleaseChecker:
                         source="piratebay",
                     )
 
+        # No exact quality match found.
+        # If target quality is above 1080p, try a second pass looking for
+        # any acceptable quality (>= 1080p) as a preliminary match.
+        target_tier = get_quality_tier(monitor.quality)
+        if target_tier > MIN_ACCEPTABLE_TIER and diag.quality_rejected > 0:
+            logger.info(
+                "trying_preliminary_quality_search",
+                monitor_id=monitor.id,
+                title=monitor.title,
+                target_quality=monitor.quality,
+            )
+
+            preliminary = await self._search_preliminary(
+                queries,
+                monitor,
+                category,
+                is_episode_tracking,
+                episode_number,
+                season_number,
+            )
+            if preliminary:
+                diag.result = "found_preliminary"
+                self._log_diagnostics(monitor, diag)
+                return preliminary
+
         # Log diagnostic info about why nothing was found
         if diag.total_results > 0:
             if diag.quality_rejected > 0:
@@ -484,6 +584,87 @@ class ReleaseChecker:
             season_pack_episode_range=diag.season_pack_episode_range,
             providers_tried=diag.providers_tried,
         )
+
+    async def _search_preliminary(
+        self,
+        queries: list[str],
+        monitor: Any,
+        category: str,
+        is_episode_tracking: bool,
+        episode_number: int | None,
+        season_number: int | None,
+    ) -> FoundRelease | None:
+        """Search for acceptable quality (>= 1080p) when target quality not found.
+
+        This is a second pass with relaxed quality matching.
+        Returns a FoundRelease with is_preliminary=True.
+
+        Args:
+            queries: Search queries to try
+            monitor: Monitor object
+            category: Content category
+            is_episode_tracking: Whether tracking specific episode
+            episode_number: Target episode number
+            season_number: Target season number
+
+        Returns:
+            FoundRelease with is_preliminary=True, or None
+        """
+        # Use a fresh diagnostics — we don't want to mix with the main search
+        diag = CheckDiagnostics()
+
+        for query in queries:
+            diag.queries_tried.append(query)
+
+            # Search TorAPI with relaxed quality (1080p as minimum acceptable)
+            result = await self._search_torapi_multi(
+                query,
+                "1080p",  # Search for 1080p as minimum acceptable
+                category,
+                diag,
+                episode_number=episode_number if is_episode_tracking else None,
+                season_number=season_number if is_episode_tracking else None,
+            )
+            if result and is_acceptable_quality(result.get("quality"), result.get("title", "")):
+                found_quality = normalize_quality(result.get("quality")) or "1080p"
+                return FoundRelease(
+                    monitor_id=monitor.id,
+                    user_id=monitor.user_id,
+                    title=monitor.title,
+                    torrent_title=result["title"],
+                    quality=found_quality,
+                    size=result["size"],
+                    seeds=result["seeds"],
+                    magnet=result["magnet"],
+                    source=result.get("source", "rutracker"),
+                    is_preliminary=True,
+                )
+
+            # Search direct Rutracker with relaxed quality
+            result = await self._search_rutracker_direct(
+                query,
+                "1080p",
+                category,
+                diag,
+                episode_number=episode_number if is_episode_tracking else None,
+                season_number=season_number if is_episode_tracking else None,
+            )
+            if result and is_acceptable_quality(result.get("quality"), result.get("title", "")):
+                found_quality = normalize_quality(result.get("quality")) or "1080p"
+                return FoundRelease(
+                    monitor_id=monitor.id,
+                    user_id=monitor.user_id,
+                    title=monitor.title,
+                    torrent_title=result["title"],
+                    quality=found_quality,
+                    size=result["size"],
+                    seeds=result["seeds"],
+                    magnet=result["magnet"],
+                    source="rutracker",
+                    is_preliminary=True,
+                )
+
+        return None
 
     def _filter_results_for_episode(
         self,
