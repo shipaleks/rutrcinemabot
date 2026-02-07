@@ -10,7 +10,7 @@ Two formats:
 
 import hashlib
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -116,6 +116,34 @@ async def collect_digest_data(user_id: int) -> dict[str, Any]:
                 "audio_language": prefs.audio_language,
                 "genres": prefs.preferred_genres,
             }
+
+        # Recently found monitors (releases that became available)
+        try:
+            found_monitors = await storage.get_monitors(user_id=user_id, status="found")
+            # Include monitors found in the last 48 hours
+            recent_found = []
+            now = datetime.now(UTC)
+            for m in found_monitors:
+                if m.found_at:
+                    found_at = m.found_at
+                    if found_at.tzinfo is None:
+                        found_at = found_at.replace(tzinfo=UTC)
+                    if (now - found_at).total_seconds() < 172800:  # 48 hours
+                        recent_found.append(
+                            {
+                                "title": m.title,
+                                "media_type": m.media_type,
+                                "quality": m.quality,
+                                "found_at": found_at.isoformat(),
+                                "source": m.found_data.get("source") if m.found_data else None,
+                                "season": m.season_number,
+                                "episode": m.episode_number,
+                            }
+                        )
+            data["recently_found_monitors"] = recent_found
+        except Exception as e:
+            logger.warning("digest_monitors_data_failed", error=str(e))
+            data["recently_found_monitors"] = []
 
     # TMDB data
     try:
@@ -332,6 +360,9 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Недавние скачивания (без отзыва)
 {json.dumps(data.get("unreviewed_downloads", []), ensure_ascii=False)}
 
+### Мониторинги: недавно найденные релизы
+{json.dumps(data.get("recently_found_monitors", []), ensure_ascii=False)}
+
 ## Правила
 
 Сегодня: {today.isoformat()}
@@ -351,9 +382,10 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 6. Если есть памятная дата — включи (это изюминка)
 7. Для цифровых релизов — отметь «уже можно скачать»
 8. Если есть скачивания без отзыва — можно ОДИН РАЗ мимоходом спросить в конце
-9. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ используй Markdown
-10. Эмодзи только структурные: 📰 🎬 📺 💿 📅. Не для эмоций
-11. Максимум 1500 символов
+9. Если есть недавно найденные мониторинги — упомяни, что релиз стал доступен на трекере
+10. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ используй Markdown
+11. Эмодзи только структурные: 📰 🎬 📺 💿 📅. Не для эмоций
+12. Максимум 1500 символов
 
 ## ОБЯЗАТЕЛЬНО в конце добавь блок:
 ---TOPICS---
@@ -413,6 +445,9 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Скачивания без отзыва
 {json.dumps(data.get("unreviewed_downloads", []), ensure_ascii=False)}
 
+### Мониторинги: недавно найденные релизы
+{json.dumps(data.get("recently_found_monitors", []), ensure_ascii=False)}
+
 ## Правила
 
 Сегодня: {today.isoformat()}
@@ -440,6 +475,7 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 4. Entity-ссылки: <a href="https://t.me/{bot_username}?start=m_TMDB_ID">Название</a> для фильмов, t_ для сериалов
 5. Можно иметь мнение — это авторский дайджест, не нейтральная лента новостей
 6. Если есть скачивания без отзыва — мимоходом спроси в конце
+7. Если есть недавно найденные мониторинги — упомяни, что релиз стал доступен
 7. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ Markdown
 8. Эмодзи только структурные. Максимум 3500 символов
 

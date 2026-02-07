@@ -319,6 +319,11 @@ class MonitoringScheduler:
     async def _check_all_monitors(self) -> list[FoundRelease]:
         """Check active monitors using smart frequency logic.
 
+        Two-phase approach:
+        1. Retry monitors in "found_pending" state (found but notification failed)
+           — skip re-searching, just retry notification from cached found_data
+        2. Check active monitors for new releases
+
         Monitors are checked at different intervals based on their release date:
         - Already released: every 2 hours
         - Within a week: every 4 hours
@@ -338,7 +343,17 @@ class MonitoringScheduler:
 
         try:
             async with get_storage() as storage:
-                # Get all active monitors
+                # Phase 1: Retry pending notifications (found but not notified)
+                pending_monitors = await storage.get_monitors(status="found_pending")
+                if pending_monitors:
+                    logger.info(
+                        "retrying_pending_notifications",
+                        count=len(pending_monitors),
+                    )
+                    for monitor in pending_monitors:
+                        await self._retry_pending_notification(storage, monitor)
+
+                # Phase 2: Check active monitors for new releases
                 all_monitors = await storage.get_all_active_monitors()
 
                 if not all_monitors:
@@ -388,6 +403,15 @@ class MonitoringScheduler:
                         "torrent_title": release.torrent_title,
                     }
 
+                    # Cache found_data immediately (found_pending state)
+                    # so if notification fails, we don't need to re-search
+                    await storage.update_monitor_status(
+                        release.monitor_id,
+                        status="found_pending",
+                        found_at=datetime.now(UTC),
+                        found_data=found_data,
+                    )
+
                     # Auto-create next episode monitor for episode tracking mode
                     next_monitor_id = None
                     if (
@@ -400,32 +424,29 @@ class MonitoringScheduler:
                     # Get user's telegram_id for notification
                     user = await storage.get_user(release.user_id)
                     if user:
-                        # Send notification BEFORE updating status to "found"
-                        # so that if notification fails, the monitor stays active
-                        # and will be retried on next check
                         notified = await self._notify_user(
                             user.telegram_id, release, monitor, next_monitor_id
                         )
 
-                        if not notified:
+                        if notified:
+                            # Transition to "found" after successful notification
+                            await storage.update_monitor_status(
+                                release.monitor_id,
+                                status="found",
+                                found_at=datetime.now(UTC),
+                                found_data=found_data,
+                            )
+
+                            # Auto-download if enabled
+                            if monitor.auto_download:
+                                await self._auto_download(release)
+                        else:
                             logger.warning(
-                                "skipping_status_update_notification_failed",
+                                "notification_failed_will_retry",
                                 monitor_id=release.monitor_id,
                                 title=release.title,
                             )
-                            continue
-
-                        # Only mark as "found" after successful notification
-                        await storage.update_monitor_status(
-                            release.monitor_id,
-                            status="found",
-                            found_at=datetime.now(UTC),
-                            found_data=found_data,
-                        )
-
-                        # Auto-download if enabled
-                        if monitor.auto_download:
-                            await self._auto_download(release)
+                            # Monitor stays in "found_pending" — will retry next run
 
                         # Sync monitors to memory (update active_context)
                         try:
@@ -446,6 +467,70 @@ class MonitoringScheduler:
         )
 
         return found_releases
+
+    async def _retry_pending_notification(
+        self,
+        storage: Any,
+        monitor: Monitor,
+    ) -> None:
+        """Retry notification for a monitor stuck in found_pending state.
+
+        Uses cached found_data to avoid re-searching trackers.
+
+        Args:
+            storage: Storage instance
+            monitor: Monitor in found_pending state
+        """
+        if not monitor.found_data:
+            logger.warning(
+                "found_pending_no_data",
+                monitor_id=monitor.id,
+                title=monitor.title,
+            )
+            # No found_data cached — reset to active for re-search
+            await storage.update_monitor_status(monitor.id, status="active")
+            return
+
+        user = await storage.get_user(monitor.user_id)
+        if not user:
+            return
+
+        # Reconstruct FoundRelease from cached data
+        release = FoundRelease(
+            monitor_id=monitor.id,
+            user_id=monitor.user_id,
+            title=monitor.title,
+            torrent_title=monitor.found_data.get("torrent_title", ""),
+            quality=monitor.found_data.get("quality", monitor.quality),
+            size=monitor.found_data.get("size", ""),
+            seeds=monitor.found_data.get("seeds", 0),
+            magnet=monitor.found_data.get("magnet", ""),
+            source=monitor.found_data.get("source", "unknown"),
+        )
+
+        notified = await self._notify_user(user.telegram_id, release, monitor)
+
+        if notified:
+            await storage.update_monitor_status(
+                monitor.id,
+                status="found",
+                found_at=monitor.found_at or datetime.now(UTC),
+                found_data=monitor.found_data,
+            )
+            logger.info(
+                "pending_notification_retry_success",
+                monitor_id=monitor.id,
+                title=monitor.title,
+            )
+
+            if monitor.auto_download and release.magnet:
+                await self._auto_download(release)
+        else:
+            logger.warning(
+                "pending_notification_retry_failed",
+                monitor_id=monitor.id,
+                title=monitor.title,
+            )
 
     async def _run_memory_archival(self) -> None:
         """Run periodic memory archival for all users.
@@ -640,6 +725,19 @@ class MonitoringScheduler:
             return None
 
     @staticmethod
+    def _escape_html(text: str) -> str:
+        """Escape HTML special characters for Telegram HTML mode.
+
+        Args:
+            text: Text to escape
+
+        Returns:
+            Escaped text safe for HTML parse mode
+        """
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Keep for push notifications that still use Markdown
+    @staticmethod
     def _escape_markdown(text: str) -> str:
         """Escape Telegram Markdown special characters.
 
@@ -649,7 +747,6 @@ class MonitoringScheduler:
         Returns:
             Escaped text safe for Markdown parse mode
         """
-        # Telegram Markdown v1 special chars: _ * ` [
         for char in ("_", "*", "`", "["):
             text = text.replace(char, f"\\{char}")
         return text
@@ -662,6 +759,8 @@ class MonitoringScheduler:
         next_monitor_id: int | None = None,
     ) -> bool:
         """Send Telegram notification about found release.
+
+        Uses HTML formatting (more reliable than Markdown for Telegram).
 
         Args:
             telegram_id: User's Telegram ID
@@ -684,15 +783,16 @@ class MonitoringScheduler:
         ):
             episode_info = f" S{monitor.season_number:02d}E{monitor.episode_number:02d}"
 
-        # Escape special Markdown characters in dynamic content
-        safe_title = self._escape_markdown(release.title)
-        safe_quality = self._escape_markdown(release.quality)
-        safe_source = self._escape_markdown(release.source.title())
+        # Escape HTML special characters in dynamic content
+        safe_title = self._escape_html(release.title)
+        safe_quality = self._escape_html(release.quality)
+        safe_source = self._escape_html(release.source.title())
+        safe_size = self._escape_html(release.size)
 
-        # Format notification message
+        # Format notification message in HTML
         message = (
-            f"🎬 *{safe_title}{episode_info}* — доступен!\n\n"
-            f"📊 {safe_quality} | {release.size} | {release.seeds} сидов\n"
+            f"🎬 <b>{safe_title}{episode_info}</b> — доступен!\n\n"
+            f"📊 {safe_quality} | {safe_size} | {release.seeds} сидов\n"
             f"📡 Источник: {safe_source}"
         )
 
@@ -741,7 +841,7 @@ class MonitoringScheduler:
             await self._bot.send_message(
                 chat_id=telegram_id,
                 text=message,
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=keyboard,
             )
             logger.info(
@@ -753,12 +853,12 @@ class MonitoringScheduler:
             return True
         except Exception as e:
             logger.warning(
-                "monitoring_notification_markdown_failed",
+                "monitoring_notification_html_failed",
                 telegram_id=telegram_id,
                 error=str(e),
             )
 
-        # Fallback: send without Markdown formatting
+        # Fallback: send without any formatting
         try:
             plain_message = (
                 f"🎬 {release.title}{episode_info} — доступен!\n\n"
