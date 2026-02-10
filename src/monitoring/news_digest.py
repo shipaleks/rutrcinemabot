@@ -105,8 +105,12 @@ async def collect_digest_data(user_id: int) -> dict[str, Any]:
         ]
 
         # Recent digest topics (to avoid repetition in daily digests)
-        recent_topics = await storage.get_recent_digest_topics(user_id, days=3, digest_type="daily")
+        recent_topics = await storage.get_recent_digest_topics(user_id, days=7, digest_type="daily")
         data["recent_topics"] = recent_topics
+
+        # Structured topic IDs for explicit deduplication
+        recent_topic_ids = await storage.get_recent_digest_topic_ids(user_id, days=7)
+        data["recent_topic_ids"] = recent_topic_ids
 
         # User preferences
         prefs = await storage.get_preferences(user_id)
@@ -117,33 +121,38 @@ async def collect_digest_data(user_id: int) -> dict[str, Any]:
                 "genres": prefs.preferred_genres,
             }
 
-        # Recently found monitors (releases that became available)
+        # Recently found monitors — user already received notifications about these.
+        # Collect titles as DO-NOT-MENTION to prevent digest from repeating this info.
         try:
             found_monitors = await storage.get_monitors(user_id=user_id, status="found")
-            # Include monitors found in the last 48 hours
-            recent_found = []
             now = datetime.now(UTC)
+            do_not_mention_titles: list[str] = []
             for m in found_monitors:
                 if m.found_at:
                     found_at = m.found_at
                     if found_at.tzinfo is None:
                         found_at = found_at.replace(tzinfo=UTC)
                     if (now - found_at).total_seconds() < 172800:  # 48 hours
-                        recent_found.append(
-                            {
-                                "title": m.title,
-                                "media_type": m.media_type,
-                                "quality": m.quality,
-                                "found_at": found_at.isoformat(),
-                                "source": m.found_data.get("source") if m.found_data else None,
-                                "season": m.season_number,
-                                "episode": m.episode_number,
-                            }
-                        )
-            data["recently_found_monitors"] = recent_found
+                        do_not_mention_titles.append(m.title)
+            data["do_not_mention_monitors"] = do_not_mention_titles
         except Exception as e:
             logger.warning("digest_monitors_data_failed", error=str(e))
-            data["recently_found_monitors"] = []
+            data["do_not_mention_monitors"] = []
+
+        # Also add recently downloaded titles to DO-NOT-MENTION list
+        try:
+            recent_downloads = await storage.get_downloads(user_id, limit=10)
+            now = datetime.now(UTC)
+            for d in recent_downloads:
+                dl_at = d.downloaded_at
+                if dl_at.tzinfo is None:
+                    dl_at = dl_at.replace(tzinfo=UTC)
+                if (now - dl_at).total_seconds() < 172800 and d.title not in data[
+                    "do_not_mention_monitors"
+                ]:  # 48 hours
+                    data["do_not_mention_monitors"].append(d.title)
+        except Exception as e:
+            logger.warning("digest_downloads_data_failed", error=str(e))
 
     # TMDB data
     try:
@@ -224,7 +233,7 @@ async def generate_digest(
     user_id: int,
     telegram_id: int,
     digest_type: str = "daily",
-) -> tuple[str, list[Download], str | None] | None:
+) -> tuple[str, list[Download], str | None, str | None] | None:
     """Generate a personalized digest using Claude.
 
     Args:
@@ -283,6 +292,20 @@ async def generate_digest(
             # Remove the topics block from the response
             response = re.sub(r"---TOPICS---.*?---END---", "", response, flags=re.DOTALL).strip()
 
+        # Extract structured topic IDs for deduplication
+        topic_id_list: list[str] = []
+        # Parse TMDB IDs from entity links in the response
+        tmdb_ids_in_response = re.findall(r"start=m_(\d+)|start=t_(\d+)", response)
+        for m_id, t_id in tmdb_ids_in_response:
+            if m_id:
+                topic_id_list.append(f"m_{m_id}")
+            if t_id:
+                topic_id_list.append(f"t_{t_id}")
+        # Also extract bold titles as fallback identifiers
+        bold_titles = re.findall(r"<b>([^<]+)</b>", response)
+        topic_id_list.extend([t.strip() for t in bold_titles[:10]])
+        topic_ids_json = json.dumps(topic_id_list, ensure_ascii=False) if topic_id_list else None
+
         # Convert markdown links to HTML for Telegram
         from src.bot.streaming import _markdown_to_telegram_html
 
@@ -300,7 +323,7 @@ async def generate_digest(
                             mentioned_downloads.append(dl)
                             break
 
-        return html_text, mentioned_downloads, topics_summary
+        return html_text, mentioned_downloads, topics_summary, topic_ids_json
 
     except Exception as e:
         logger.exception("digest_generation_failed", user_id=user_id, error=str(e))
@@ -340,6 +363,10 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Темы из прошлых дайджестов (НЕ ПОВТОРЯЙ без нового контекста!)
 {json.dumps(data.get("recent_topics", []), ensure_ascii=False)}
 
+### ЗАПРЕЩЁННЫЕ темы (уже были в дайджестах за последнюю неделю):
+{json.dumps(data.get("recent_topic_ids", []), ensure_ascii=False)}
+Если TMDB ID или название из этого списка — НЕ ВКЛЮЧАЙ в дайджест, кроме случаев когда есть ДЕЙСТВИТЕЛЬНО НОВАЯ информация (новая новость, не повторение).
+
 ## Данные
 
 ### Тренды дня
@@ -348,7 +375,7 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Сейчас в кино
 {json.dumps(data.get("now_playing", [])[:8], ensure_ascii=False)}
 
-### Появилось в цифре
+### Появилось в цифре (данные TMDB о цифровых релизах; означает доступность для покупки/аренды на стримингах, НЕ обязательно новая раздача на трекере)
 {json.dumps(data.get("recently_digital", [])[:8], ensure_ascii=False)}
 
 ### Памятные даты
@@ -360,8 +387,8 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Недавние скачивания (без отзыва)
 {json.dumps(data.get("unreviewed_downloads", []), ensure_ascii=False)}
 
-### Мониторинги: недавно найденные релизы
-{json.dumps(data.get("recently_found_monitors", []), ensure_ascii=False)}
+### НЕ УПОМИНАЙ (пользователь уже знает — получил уведомление или сам скачал):
+{json.dumps(data.get("do_not_mention_monitors", []), ensure_ascii=False)}
 
 ## Правила
 
@@ -373,6 +400,7 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 - Если в данных нет свежих новостей — НЕ ВЫДУМЫВАЙ их
 - Любой сериал/фильм "в разработке" из твоей памяти может уже выйти — не упоминай такое без источника
 - НЕ ПОВТОРЯЙ темы из прошлых дайджестов, если нет НОВОГО развития событий
+- НЕ УПОМИНАЙ контент из списка "НЕ УПОМИНАЙ" — пользователь уже в курсе
 
 1. Выбери 3-5 объективно интересных тем ТОЛЬКО из данных выше
 2. Пиши как новостной дайджест, а НЕ как персональные рекомендации
@@ -382,10 +410,9 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 6. Если есть памятная дата — включи (это изюминка)
 7. Для цифровых релизов — отметь «уже можно скачать»
 8. Если есть скачивания без отзыва — можно ОДИН РАЗ мимоходом спросить в конце
-9. Если есть недавно найденные мониторинги — упомяни, что релиз стал доступен на трекере
-10. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ используй Markdown
-11. Эмодзи только структурные: 📰 🎬 📺 💿 📅. Не для эмоций
-12. Максимум 1500 символов
+9. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ используй Markdown
+10. Эмодзи только структурные: 📰 🎬 📺 💿 📅. Не для эмоций
+11. Максимум 1500 символов
 
 ## ОБЯЗАТЕЛЬНО в конце добавь блок:
 ---TOPICS---
@@ -433,7 +460,7 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Скоро выходит
 {json.dumps(data.get("upcoming", []), ensure_ascii=False)}
 
-### Появилось в цифре
+### Появилось в цифре (данные TMDB о цифровых релизах; означает доступность для покупки/аренды на стримингах, НЕ обязательно новая раздача на трекере)
 {json.dumps(data.get("recently_digital", []), ensure_ascii=False)}
 
 ### Памятные даты
@@ -445,8 +472,8 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 ### Скачивания без отзыва
 {json.dumps(data.get("unreviewed_downloads", []), ensure_ascii=False)}
 
-### Мониторинги: недавно найденные релизы
-{json.dumps(data.get("recently_found_monitors", []), ensure_ascii=False)}
+### НЕ УПОМИНАЙ (пользователь уже знает — получил уведомление или сам скачал):
+{json.dumps(data.get("do_not_mention_monitors", []), ensure_ascii=False)}
 
 ## Правила
 
@@ -457,6 +484,7 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 - НЕ ДОБАВЛЯЙ информацию из своей памяти — она устарела!
 - Если сериал/фильм был "в разработке" по твоим данным — НЕ упоминай, если нет в источниках выше
 - Новости индустрии бери ТОЛЬКО из раздела "Новости индустрии"
+- НЕ УПОМИНАЙ контент из списка "НЕ УПОМИНАЙ" — пользователь уже в курсе
 
 1. 7-10 тем, объективно значимых для киноиндустрии, ТОЛЬКО из данных выше
 2. Структура:
@@ -475,7 +503,6 @@ Blocklist (НЕ упоминай!): {json.dumps(data.get("blocklist", []), ensur
 4. Entity-ссылки: <a href="https://t.me/{bot_username}?start=m_TMDB_ID">Название</a> для фильмов, t_ для сериалов
 5. Можно иметь мнение — это авторский дайджест, не нейтральная лента новостей
 6. Если есть скачивания без отзыва — мимоходом спроси в конце
-7. Если есть недавно найденные мониторинги — упомяни, что релиз стал доступен
 7. Формат: Telegram HTML (<b>, <i>, <a href>). НЕ Markdown
 8. Эмодзи только структурные. Максимум 3500 символов
 
@@ -564,7 +591,7 @@ async def send_digest(
         logger.warning("digest_generation_returned_none", user_id=user_id)
         return False
 
-    html_text, mentioned_downloads, topics_summary = result
+    html_text, mentioned_downloads, topics_summary, topic_ids_json = result
 
     # Add frequency selection buttons if this is the first digest
     async with get_storage() as storage:
@@ -615,7 +642,11 @@ async def send_digest(
         data = await collect_digest_data(user_id)
         content_hash = compute_content_hash(data)
         await storage.add_digest_history(
-            user_id, digest_type, content_hash, topics_summary=topics_summary
+            user_id,
+            digest_type,
+            content_hash,
+            topics_summary=topics_summary,
+            topic_ids=topic_ids_json,
         )
 
         # Mark mentioned downloads as followed up

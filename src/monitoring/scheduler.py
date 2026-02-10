@@ -393,13 +393,36 @@ class MonitoringScheduler:
                     if not monitor:
                         continue
 
+                    # Check if user already downloaded this content
+                    if monitor.tmdb_id:
+                        already_downloaded = await storage.has_download_for_tmdb(
+                            monitor.user_id, monitor.tmdb_id, monitor.media_type
+                        )
+                        if already_downloaded:
+                            logger.info(
+                                "monitor_already_downloaded",
+                                monitor_id=monitor.id,
+                                title=monitor.title,
+                                tmdb_id=monitor.tmdb_id,
+                            )
+                            await storage.update_monitor_status(
+                                monitor.id,
+                                status="found",
+                                found_at=datetime.now(UTC),
+                                found_data={
+                                    "auto_completed": True,
+                                    "reason": "already_downloaded",
+                                },
+                            )
+                            continue
+
                     # Handle preliminary matches differently
                     if release.is_preliminary:
                         await self._handle_preliminary_release(storage, release, monitor)
                         continue
 
                     # Store found release data for later download via button
-                    found_data = {
+                    found_data: dict[str, Any] = {
                         "magnet": release.magnet,
                         "quality": release.quality,
                         "size": release.size,
@@ -407,6 +430,20 @@ class MonitoringScheduler:
                         "source": release.source,
                         "torrent_title": release.torrent_title,
                     }
+
+                    # Collect all matching results for the "show results" button
+                    try:
+                        all_results = await self._checker.collect_all_results(
+                            monitor, max_results=5
+                        )
+                        if all_results:
+                            found_data["all_results"] = all_results
+                    except Exception as e:
+                        logger.warning(
+                            "collect_all_results_failed",
+                            monitor_id=release.monitor_id,
+                            error=str(e),
+                        )
 
                     # Cache found_data immediately (found_pending state)
                     # so if notification fails, we don't need to re-search
@@ -493,13 +530,37 @@ class MonitoringScheduler:
         existing_data = monitor.found_data or {}
         prev_preliminary_quality = existing_data.get("preliminary_quality")
 
-        if prev_preliminary_quality == release.quality:
+        # Normalize both qualities before comparison (e.g. "BDRip" and "1080p" are the same tier)
+        from src.monitoring.checker import normalize_quality
+
+        prev_normalized = normalize_quality(prev_preliminary_quality)
+        current_normalized = normalize_quality(release.quality)
+
+        if prev_normalized and current_normalized and prev_normalized == current_normalized:
             logger.debug(
                 "preliminary_already_notified",
                 monitor_id=monitor.id,
                 quality=release.quality,
+                normalized=current_normalized,
             )
             return
+
+        # Additional cooldown: don't re-notify within 24 hours regardless of quality
+        prev_notified_at = existing_data.get("preliminary_notified_at")
+        if prev_notified_at:
+            try:
+                last_notification = datetime.fromisoformat(prev_notified_at)
+                if last_notification.tzinfo is None:
+                    last_notification = last_notification.replace(tzinfo=UTC)
+                if (datetime.now(UTC) - last_notification).total_seconds() < 86400:
+                    logger.debug(
+                        "preliminary_cooldown_active",
+                        monitor_id=monitor.id,
+                        last_notified=prev_notified_at,
+                    )
+                    return
+            except (ValueError, TypeError):
+                pass
 
         user = await storage.get_user(monitor.user_id)
         if not user:
@@ -974,12 +1035,8 @@ class MonitoringScheduler:
         buttons = [
             [
                 InlineKeyboardButton(
-                    "⬇️ Скачать",
-                    callback_data=f"monitor_download_{release.monitor_id}",
-                ),
-                InlineKeyboardButton(
-                    "📋 Детали",
-                    callback_data=f"monitor_details_{release.monitor_id}",
+                    "🔍 Показать раздачи",
+                    callback_data=f"monitor_results_{release.monitor_id}",
                 ),
             ],
         ]

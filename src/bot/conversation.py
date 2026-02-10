@@ -4179,7 +4179,10 @@ async def handle_monitor_callback(update: Update, _context: ContextTypes.DEFAULT
     logger.info("monitor_callback", user_id=user.id, callback=callback_data)
 
     # Parse callback data
-    if callback_data.startswith("monitor_download_"):
+    if callback_data.startswith("monitor_results_"):
+        monitor_id = int(callback_data.replace("monitor_results_", ""))
+        await _handle_monitor_show_results(query, user.id, monitor_id)
+    elif callback_data.startswith("monitor_download_"):
         monitor_id = int(callback_data.replace("monitor_download_", ""))
         await _handle_monitor_download(query, user.id, monitor_id)
     elif callback_data.startswith("monitor_details_"):
@@ -4188,6 +4191,71 @@ async def handle_monitor_callback(update: Update, _context: ContextTypes.DEFAULT
     elif callback_data.startswith("monitor_cancel_"):
         monitor_id = int(callback_data.replace("monitor_cancel_", ""))
         await _handle_monitor_cancel(query, user.id, monitor_id)
+
+
+async def _handle_monitor_show_results(query: Any, telegram_id: int, monitor_id: int) -> None:
+    """Handle 'show results' button: display torrent cards with download buttons."""
+    async with get_storage() as storage:
+        monitor = await storage.get_monitor(monitor_id)
+        if not monitor:
+            await query.edit_message_text("Монитор не найден.")
+            return
+
+        # Verify ownership
+        db_user = await storage.get_user_by_telegram_id(telegram_id)
+        if not db_user or monitor.user_id != db_user.id:
+            await query.edit_message_text("У вас нет доступа к этому монитору.")
+            return
+
+        found_data = monitor.found_data or {}
+        all_results = found_data.get("all_results", [])
+
+        # Fallback: if no all_results, create single-item list from top-level found_data
+        if not all_results and found_data.get("magnet"):
+            all_results = [
+                {
+                    "title": found_data.get("torrent_title", monitor.title),
+                    "quality": found_data.get("quality", ""),
+                    "size": found_data.get("size", ""),
+                    "seeds": found_data.get("seeds", 0),
+                    "magnet": found_data["magnet"],
+                    "source": found_data.get("source", "unknown"),
+                }
+            ]
+
+        if not all_results:
+            await query.edit_message_text("Раздачи не найдены. Попробуйте поиск вручную.")
+            return
+
+        # Cache each result for the standard torrent card buttons
+        result_ids = []
+        for i, result in enumerate(all_results):
+            result_id = f"mon_{monitor_id}_{i}"
+            cache_search_result(
+                result_id,
+                {
+                    "title": result.get("title", monitor.title),
+                    "quality": result.get("quality", ""),
+                    "size": result.get("size", ""),
+                    "seeds": result.get("seeds", 0),
+                    "magnet": result.get("magnet", ""),
+                    "source": result.get("source", "unknown"),
+                    "torrent_url": None,
+                },
+            )
+            result_ids.append(result_id)
+
+        # Send torrent cards using the existing UI
+        bot = query.get_bot()
+        chat_id = query.message.chat_id
+        await send_search_results_cards(bot, chat_id, result_ids, max_results=5)
+
+    logger.info(
+        "monitor_show_results",
+        telegram_id=telegram_id,
+        monitor_id=monitor_id,
+        results_count=len(all_results),
+    )
 
 
 async def _handle_monitor_download(query: Any, telegram_id: int, monitor_id: int) -> None:

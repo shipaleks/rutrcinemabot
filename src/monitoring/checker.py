@@ -675,7 +675,8 @@ class ReleaseChecker:
         diag: CheckDiagnostics,
         get_title: Any = None,
         get_seeds: Any = None,
-    ) -> Any | None:
+        return_all: bool = False,
+    ) -> Any | list[Any] | None:
         """Filter search results, considering season packs for episode tracking.
 
         Args:
@@ -686,9 +687,10 @@ class ReleaseChecker:
             diag: Diagnostics collector
             get_title: Function to extract title from result
             get_seeds: Function to extract seeds from result
+            return_all: If True, return all valid results instead of just the best
 
         Returns:
-            Best matching result or None
+            Best matching result, list of all valid results (if return_all), or None
         """
         if not results:
             return None
@@ -753,7 +755,10 @@ class ReleaseChecker:
             valid_results.append(r)
 
         if not valid_results:
-            return None
+            return [] if return_all else None
+
+        if return_all:
+            return valid_results
 
         # Return best result by seeds
         return max(valid_results, key=get_seeds)
@@ -990,6 +995,130 @@ class ReleaseChecker:
         except PirateBayError as e:
             logger.warning("piratebay_search_error", title=title, error=str(e))
             return None
+
+    async def collect_all_results(
+        self,
+        monitor: Any,
+        max_results: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Collect ALL matching results for a monitor (not just the best).
+
+        Used by the "show results" button in monitoring notifications to display
+        multiple torrent cards with individual download buttons.
+
+        Args:
+            monitor: Monitor object
+            max_results: Maximum results to return
+
+        Returns:
+            List of result dicts sorted by seeds descending. May be empty.
+        """
+        tracking_mode = getattr(monitor, "tracking_mode", "season")
+        season_number = getattr(monitor, "season_number", None)
+        episode_number = getattr(monitor, "episode_number", None)
+        category = "tv_show" if monitor.media_type == "tv" else "movie"
+
+        is_episode_tracking = (
+            tracking_mode == "episode" and season_number is not None and episode_number is not None
+        )
+
+        if monitor.media_type == "tv":
+            queries = self._build_tv_search_queries(monitor)
+        else:
+            queries = [monitor.title]
+
+        all_valid: list[dict[str, Any]] = []
+        seen_magnets: set[str] = set()
+        diag = CheckDiagnostics()
+
+        for query in queries:
+            diag.queries_tried.append(query)
+
+            # Search TorAPI across providers
+            try:
+                await self._rate_limit()
+                providers = [
+                    TorAPIProvider.RUTRACKER,
+                    TorAPIProvider.KINOZAL,
+                    TorAPIProvider.RUTOR,
+                ]
+                torapi_results = []
+                async with TorAPIClient() as torapi:
+                    for provider in providers:
+                        try:
+                            results = await torapi.search(query, provider)
+                            if results:
+                                for r in results:
+                                    r.provider = provider.value
+                                torapi_results.extend(results)
+                        except Exception:
+                            continue
+
+                if torapi_results:
+                    valid = self._filter_results_for_episode(
+                        torapi_results,
+                        monitor.quality,
+                        episode_number if is_episode_tracking else None,
+                        season_number if is_episode_tracking else None,
+                        diag,
+                        get_title=lambda r: r.name,
+                        get_seeds=lambda r: r.seeds,
+                        return_all=True,
+                    )
+                    for r in valid or []:
+                        if r.magnet and r.magnet not in seen_magnets:
+                            seen_magnets.add(r.magnet)
+                            all_valid.append(
+                                {
+                                    "title": r.name,
+                                    "size": r.size,
+                                    "seeds": r.seeds,
+                                    "quality": r.quality or monitor.quality,
+                                    "magnet": r.magnet,
+                                    "source": getattr(r, "provider", "rutracker"),
+                                }
+                            )
+            except Exception as e:
+                logger.debug("collect_all_torapi_failed", error=str(e))
+
+            # Search direct Rutracker
+            try:
+                await self._rate_limit()
+                async with RutrackerClient(
+                    username=self._rutracker_username,
+                    password=self._rutracker_password,
+                ) as client:
+                    results = await client.search(query, quality=monitor.quality, category=category)
+                    if results:
+                        valid = self._filter_results_for_episode(
+                            results,
+                            monitor.quality,
+                            episode_number if is_episode_tracking else None,
+                            season_number if is_episode_tracking else None,
+                            diag,
+                            get_title=lambda r: r.title,
+                            get_seeds=lambda r: r.seeds,
+                            return_all=True,
+                        )
+                        for r in valid or []:
+                            if r.magnet and r.magnet not in seen_magnets:
+                                seen_magnets.add(r.magnet)
+                                all_valid.append(
+                                    {
+                                        "title": r.title,
+                                        "size": r.size,
+                                        "seeds": r.seeds,
+                                        "quality": r.quality or monitor.quality,
+                                        "magnet": r.magnet,
+                                        "source": "rutracker",
+                                    }
+                                )
+            except Exception as e:
+                logger.debug("collect_all_rutracker_failed", error=str(e))
+
+        # Sort by seeds descending, take top N
+        all_valid.sort(key=lambda x: x.get("seeds", 0), reverse=True)
+        return all_valid[:max_results]
 
     async def check_all_monitors(
         self,

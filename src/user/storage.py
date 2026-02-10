@@ -313,6 +313,7 @@ class DigestHistory(BaseModel):
     digest_type: str  # "daily" or "weekly"
     content_hash: str  # Hash of topics included
     topics_summary: str | None = None  # Summary of topics for deduplication
+    topic_ids: str | None = None  # JSON list of TMDB IDs and title strings for structured dedup
     sent_at: datetime
 
 
@@ -1203,12 +1204,20 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
+    async def has_download_for_tmdb(
+        self, user_id: int, tmdb_id: int, media_type: str | None = None
+    ) -> bool:
+        """Check if user has already downloaded content with given TMDB ID."""
+        pass
+
+    @abstractmethod
     async def add_digest_history(
         self,
         user_id: int,
         digest_type: str,
         content_hash: str,
         topics_summary: str | None = None,
+        topic_ids: str | None = None,
     ) -> DigestHistory:
         """Record a digest delivery."""
         pass
@@ -1231,6 +1240,19 @@ class BaseStorage(ABC):
 
         Returns:
             List of topic summaries from recent digests
+        """
+        pass
+
+    @abstractmethod
+    async def get_recent_digest_topic_ids(self, user_id: int, days: int = 7) -> list[str]:
+        """Get structured topic IDs from recent digests for deduplication.
+
+        Args:
+            user_id: Internal user ID
+            days: Look back this many days
+
+        Returns:
+            Deduplicated list of topic identifiers (TMDB IDs and titles)
         """
         pass
 
@@ -1755,6 +1777,10 @@ class SQLiteStorage(BaseStorage):
             # Migration 25: Add topics_summary to digest_history for deduplication
             """
             ALTER TABLE digest_history ADD COLUMN topics_summary TEXT;
+            """,
+            # Migration 26: Add topic_ids to digest_history for structured deduplication
+            """
+            ALTER TABLE digest_history ADD COLUMN topic_ids TEXT;
             """,
         ]
 
@@ -3609,19 +3635,37 @@ class SQLiteStorage(BaseStorage):
         rows = await cursor.fetchall()
         return [self._row_to_download(row) for row in rows]
 
+    async def has_download_for_tmdb(
+        self, user_id: int, tmdb_id: int, media_type: str | None = None
+    ) -> bool:
+        """Check if user has already downloaded content with given TMDB ID."""
+        if media_type:
+            cursor = await self.db.execute(
+                "SELECT 1 FROM downloads WHERE user_id = ? AND tmdb_id = ? AND media_type = ? LIMIT 1",
+                (user_id, tmdb_id, media_type),
+            )
+        else:
+            cursor = await self.db.execute(
+                "SELECT 1 FROM downloads WHERE user_id = ? AND tmdb_id = ? LIMIT 1",
+                (user_id, tmdb_id),
+            )
+        row = await cursor.fetchone()
+        return row is not None
+
     async def add_digest_history(
         self,
         user_id: int,
         digest_type: str,
         content_hash: str,
         topics_summary: str | None = None,
+        topic_ids: str | None = None,
     ) -> DigestHistory:
         """Record a digest delivery."""
         now = datetime.now(UTC).isoformat()
         cursor = await self.db.execute(
-            """INSERT INTO digest_history (user_id, digest_type, content_hash, topics_summary, sent_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, digest_type, content_hash, topics_summary, now),
+            """INSERT INTO digest_history (user_id, digest_type, content_hash, topics_summary, topic_ids, sent_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, digest_type, content_hash, topics_summary, topic_ids, now),
         )
         await self.db.commit()
         return DigestHistory(
@@ -3630,6 +3674,7 @@ class SQLiteStorage(BaseStorage):
             digest_type=digest_type,
             content_hash=content_hash,
             topics_summary=topics_summary,
+            topic_ids=topic_ids,
             sent_at=datetime.fromisoformat(now),
         )
 
@@ -3646,6 +3691,26 @@ class SQLiteStorage(BaseStorage):
         )
         rows = await cursor.fetchall()
         return [row[0] for row in rows if row[0]]
+
+    async def get_recent_digest_topic_ids(self, user_id: int, days: int = 7) -> list[str]:
+        """Get structured topic IDs from recent digests for deduplication."""
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        cursor = await self.db.execute(
+            """SELECT topic_ids FROM digest_history
+               WHERE user_id = ? AND sent_at >= ? AND topic_ids IS NOT NULL
+               ORDER BY sent_at DESC""",
+            (user_id, cutoff),
+        )
+        rows = await cursor.fetchall()
+        all_ids: list[str] = []
+        for row in rows:
+            if row[0]:
+                try:
+                    ids = json.loads(row[0])
+                    all_ids.extend(ids)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return list(set(all_ids))
 
     async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
         """Get when the last digest of given type was sent."""
@@ -4366,6 +4431,10 @@ class PostgresStorage(BaseStorage):
             # Migration 25: Add topics_summary to digest_history for deduplication
             """
             ALTER TABLE digest_history ADD COLUMN IF NOT EXISTS topics_summary TEXT;
+            """,
+            # Migration 26: Add topic_ids to digest_history for structured deduplication
+            """
+            ALTER TABLE digest_history ADD COLUMN IF NOT EXISTS topic_ids TEXT;
             """,
         ]
 
@@ -6083,23 +6152,45 @@ class PostgresStorage(BaseStorage):
             )
         return [self._row_to_download(row) for row in rows]
 
+    async def has_download_for_tmdb(
+        self, user_id: int, tmdb_id: int, media_type: str | None = None
+    ) -> bool:
+        """Check if user has already downloaded content with given TMDB ID."""
+        async with self.pool.acquire() as conn:
+            if media_type:
+                row = await conn.fetchrow(
+                    "SELECT 1 FROM downloads WHERE user_id = $1 AND tmdb_id = $2 AND media_type = $3 LIMIT 1",
+                    user_id,
+                    tmdb_id,
+                    media_type,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "SELECT 1 FROM downloads WHERE user_id = $1 AND tmdb_id = $2 LIMIT 1",
+                    user_id,
+                    tmdb_id,
+                )
+        return row is not None
+
     async def add_digest_history(
         self,
         user_id: int,
         digest_type: str,
         content_hash: str,
         topics_summary: str | None = None,
+        topic_ids: str | None = None,
     ) -> DigestHistory:
         """Record a digest delivery."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO digest_history (user_id, digest_type, content_hash, topics_summary, sent_at)
-                   VALUES ($1, $2, $3, $4, NOW())
+                """INSERT INTO digest_history (user_id, digest_type, content_hash, topics_summary, topic_ids, sent_at)
+                   VALUES ($1, $2, $3, $4, $5, NOW())
                    RETURNING *""",
                 user_id,
                 digest_type,
                 content_hash,
                 topics_summary,
+                topic_ids,
             )
         return DigestHistory(
             id=row["id"],
@@ -6107,6 +6198,7 @@ class PostgresStorage(BaseStorage):
             digest_type=row["digest_type"],
             content_hash=row["content_hash"],
             topics_summary=row.get("topics_summary"),
+            topic_ids=row.get("topic_ids"),
             sent_at=row["sent_at"],
         )
 
@@ -6126,6 +6218,28 @@ class PostgresStorage(BaseStorage):
                 days,
             )
         return [row["topics_summary"] for row in rows if row["topics_summary"]]
+
+    async def get_recent_digest_topic_ids(self, user_id: int, days: int = 7) -> list[str]:
+        """Get structured topic IDs from recent digests for deduplication."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT topic_ids FROM digest_history
+                   WHERE user_id = $1
+                     AND sent_at >= NOW() - INTERVAL '1 day' * $2
+                     AND topic_ids IS NOT NULL
+                   ORDER BY sent_at DESC""",
+                user_id,
+                days,
+            )
+        all_ids: list[str] = []
+        for row in rows:
+            if row["topic_ids"]:
+                try:
+                    ids = json.loads(row["topic_ids"])
+                    all_ids.extend(ids)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return list(set(all_ids))
 
     async def get_last_digest_time(self, user_id: int, digest_type: str) -> datetime | None:
         """Get when the last digest of given type was sent."""
